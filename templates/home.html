@@ -10,7 +10,7 @@
     <section class="observatory" aria-labelledby="solar-title">
         <canvas class="observatory__sky" data-sky aria-hidden="true"></canvas>
         <canvas class="observatory__scene" id="solar-scene" tabindex="0"
-                aria-label="Карта орбит. Перетащи карту или используй стрелки для вращения. Плюс и минус меняют масштаб."></canvas>
+                aria-label="Карта орбит. Перетащи карту или используй стрелки для вращения, в том числе под плоскость орбит. Плюс и минус меняют масштаб."></canvas>
         <noscript><p class="scene-fallback">Для интерактивной карты нужен JavaScript.</p></noscript>
         <p class="scene-fallback" id="solar-fallback" hidden>В этом браузере недоступна отрисовка карты.</p>
 
@@ -44,13 +44,41 @@
             <a class="quiet-link" href="https://ssd.jpl.nasa.gov/planets/approx_pos.html">Модель JPL ↗</a>
         </div>
 
+        <details class="solar-events" id="solar-events">
+            <summary class="button glass liquid">События</summary>
+            <div class="solar-events__panel glass">
+                <ul class="solar-events__list" aria-label="Даты событий">
+                    {% for event in events %}
+                        <li><button class="button solar-event" type="button" aria-pressed="false"
+                                    data-date="{{ event.date }}" data-bodies="{{ event.bodies }}"
+                                    data-description="{{ event.description }}" data-source="{{ event.source }}"
+                                    {% if event.ephemeris %}data-ephemeris="{{ event.ephemeris }}"{% endif %}>
+                            {{ event.label }}
+                        </button></li>
+                    {% endfor %}
+                </ul>
+                <p>Парад планет — расположение планет на небе с точки зрения Земли. Пунктир соединяет Землю с планетами выбранного события на схеме. Видимость зависит от места и горизонта.</p>
+                <div class="solar-events__selection" id="solar-event-selection" hidden>
+                    <p>Дата просмотра модели · <time id="solar-event-date"></time> МСК</p>
+                    <p id="solar-event-description"></p>
+                    <a class="quiet-link" id="solar-event-source" target="_blank" rel="noopener noreferrer">Источник NASA ↗</a>
+                    <a class="quiet-link" id="solar-event-ephemeris" target="_blank" rel="noopener noreferrer" hidden>Эфемериды Меркурия · JPL ↗</a>
+                    <button class="button button--primary" id="solar-view-event" type="button">К карте</button>
+                </div>
+            </div>
+        </details>
+        <p class="scene-event-active glass" id="solar-event-active" role="status" hidden></p>
+
         <div class="time-controls glass liquid" role="group" aria-label="Управление временем">
             <div class="time-transport">
-                <button class="button icon-button" id="solar-reverse" type="button" aria-label="Обратный ход времени" aria-pressed="false" title="Обратный ход времени">
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6 3 12l6 6M3 12h12a5 5 0 0 1 5 5v1"/></svg>
+                <button class="button icon-button time-direction" id="solar-reverse" type="button" aria-label="Время назад" aria-pressed="false" title="Время назад">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 6 3 12l9 6Zm9 0-9 6 9 6Z"/></svg>
                 </button>
                 <button class="button icon-button" id="solar-pause" type="button" aria-label="Приостановить время" title="Пауза">
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path data-play hidden d="m9 5 11 7-11 7Z"/><path data-pause d="M9 6v12m6-12v12"/></svg>
+                </button>
+                <button class="button icon-button time-direction" id="solar-forward" type="button" aria-label="Время вперёд" aria-pressed="true" title="Время вперёд">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 6 9 6-9 6Zm9 0 9 6-9 6Z"/></svg>
                 </button>
             </div>
             <div class="scene-time">

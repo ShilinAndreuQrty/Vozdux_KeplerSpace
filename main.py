@@ -12,7 +12,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from archive import EXAMPLE, HZ_MODEL, fetch_catalog, load_catalog, planet_context, save_catalog
+from archive import ESI_MODEL, EXAMPLE, HZ_MODEL, fetch_catalog, load_catalog, planet_context, save_catalog
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -52,6 +52,47 @@ PLANETS = (
     ("neptune", "Нептун", "#83a9fb"),
 )
 
+NASA_PLANET_PARADES = "https://science.nasa.gov/solar-system/skywatching/planetary-alignments-and-planet-parades/"
+SOLAR_EVENTS = (
+    {
+        "date": "2025-01-25T18:00", "label": "Январь — середина февраля 2025 · Вечерний парад",
+        "description": "Венера, Сатурн, Юпитер и Марс были видны на вечернем небе.",
+        "bodies": "venus saturn jupiter mars", "source": NASA_PLANET_PARADES,
+    },
+    {
+        "date": "2025-08-23T05:00", "label": "Конец августа 2025 · Утренний парад",
+        "description": "Перед восходом были видны Меркурий, Венера, Юпитер и Сатурн.",
+        "bodies": "mercury venus jupiter saturn", "source": NASA_PLANET_PARADES,
+    },
+    {
+        "date": "2026-02-24T18:00", "label": "24 февраля 2026 · Вечерний парад",
+        "description": "На этой неделе после заката были видны Венера, Меркурий, Сатурн и Юпитер. Для Урана и Нептуна нужна была оптика.",
+        "bodies": "venus mercury saturn neptune uranus jupiter",
+        "source": "https://science.nasa.gov/image-article/apod-2026-february-24-planet-parade-over-sydney-opera-house/",
+    },
+    {
+        "date": "2026-06-09T21:00", "label": "9 июня 2026 · Венера и Юпитер",
+        "description": "Венера и Юпитер были видны рядом на вечернем небе.",
+        "bodies": "venus jupiter",
+        "source": "https://science.nasa.gov/image-article/apod-2026-june-12-venus-and-jupiter-conjunction-from-avebury/",
+    },
+    {
+        "date": "2028-10-25T06:00", "label": "Конец октября 2028 · Утренний парад",
+        "description": "NASA указывает окно, когда перед восходом можно будет увидеть пять планет.",
+        "bodies": "mercury venus jupiter mars saturn", "source": NASA_PLANET_PARADES,
+    },
+    {
+        "date": "2034-02-25T18:00", "label": "Конец февраля 2034 · Вечерний парад",
+        "description": "NASA указывает вечернее окно в конце месяца. На выбранной дате Меркурий находится с утренней стороны Солнца.",
+        "bodies": "venus jupiter mars saturn", "source": NASA_PLANET_PARADES,
+        "ephemeris": (
+            "https://ssd.jpl.nasa.gov/api/horizons.api?format=text&COMMAND=199&CENTER=500%40399"
+            "&EPHEM_TYPE=OBSERVER&START_TIME=2034-02-22&STOP_TIME=2034-03-03"
+            "&STEP_SIZE=1d&QUANTITIES=23&CSV_FORMAT=YES"
+        ),
+    },
+)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.catalog = load_catalog()
@@ -76,6 +117,7 @@ app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
 templates.env.globals["sections"] = SECTIONS
 templates.env.globals["hz_model"] = HZ_MODEL
+templates.env.globals["esi_model"] = ESI_MODEL
 templates.env.filters["number"] = format_number
 templates.env.filters["query"] = lambda value: urlencode({"planet": value}, quote_via=quote)
 
@@ -85,7 +127,7 @@ async def home(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(
         request=request,
         name="home.html",
-        context={"active_slug": "", "planets": PLANETS},
+        context={"active_slug": "", "planets": PLANETS, "events": SOLAR_EVENTS},
     )
 
 

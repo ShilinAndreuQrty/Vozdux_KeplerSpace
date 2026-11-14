@@ -345,6 +345,8 @@
 .system-facts dd small, .unit { font-size: .74rem; color: #bccbe0; font-weight: 520; }
 .system-facts dd { display: block; }
 .system-facts dd small { margin-left: .45em; color: #b7d3de; }
+.system-facts .source-arrow { width: 24px; height: 24px; margin-left: 4px; font-size: 13px; }
+.system-facts .measurement-error { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .ranking__heading h2 { font-size: clamp(1.1rem, 2.1vw, 1.5rem); letter-spacing: -.035em; }
 .rank-row__text strong { font-size: .86rem; }
 .rank-row__text small { font-size: .68rem; }

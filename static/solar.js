@@ -7,7 +7,11 @@ const DAY = 86400000;
 const MOSCOW_OFFSET = 3 * 3600000;
 const MIN_DATE = Date.UTC(1800, 0, 1) - MOSCOW_OFFSET;
 const MAX_DATE = Date.UTC(2051, 0, 1) - MOSCOW_OFFSET - 1;
-const DEFAULT_CAMERA = {yaw: -.27, tilt: .51, zoom: 1, panX: 0, panY: 0};
+const PERSPECTIVE = .22;
+const MAX_PIVOT_DISTANCE = 1.25;
+const DEFAULT_CAMERA = {
+    yaw: -.27, tilt: .51, zoom: 1, pivot: [0, 0, 0], screenX: 0, screenY: 0,
+};
 const camera = {...DEFAULT_CAMERA};
 const formatter = new Intl.NumberFormat("ru-RU", {maximumFractionDigits: 2});
 const clockFormatter = new Intl.DateTimeFormat("ru-RU", {
@@ -59,10 +63,19 @@ const timeLabel = document.querySelector("#solar-time");
 const timeMode = document.querySelector("#solar-time-mode");
 const pauseButton = document.querySelector("#solar-pause");
 const reverseButton = document.querySelector("#solar-reverse");
+const forwardButton = document.querySelector("#solar-forward");
 const speedSelect = document.querySelector("#solar-speed");
 const datePanel = document.querySelector("#solar-date");
 const dateForm = document.querySelector("#solar-date-form");
 const dateInput = document.querySelector("#solar-date-input");
+const eventPanel = document.querySelector("#solar-events");
+const eventButtons = [...eventPanel.querySelectorAll(".solar-event")];
+const eventSelection = document.querySelector("#solar-event-selection");
+const eventDate = document.querySelector("#solar-event-date");
+const eventDescription = document.querySelector("#solar-event-description");
+const eventSource = document.querySelector("#solar-event-source");
+const eventEphemeris = document.querySelector("#solar-event-ephemeris");
+const eventStatus = document.querySelector("#solar-event-active");
 const bodyName = document.querySelector("#body-name");
 const bodyType = document.querySelector("#body-type");
 const bodyFacts = document.querySelector("#body-facts");
@@ -79,6 +92,7 @@ let speed = 1;
 let direction = 1;
 let paused = false;
 let live = true;
+let eventBodyIds = [];
 let lastFrame = -Infinity;
 let lastSecond = -1;
 let dirty = true;
@@ -123,47 +137,101 @@ function compressedPoint(point) {
     return point.map(value => value * factor);
 }
 
-function cameraFrame(width, height) {
+function cameraFrame() {
+    const {width, height} = viewport;
     const mobile = width <= 720;
     return {
-        x: width * (mobile ? .50 : .56) + camera.panX,
-        y: height * (mobile ? .54 : .51) + camera.panY,
+        centerX: width * (mobile ? .50 : .56),
+        centerY: height * (mobile ? .48 : .51),
         scale: Math.min(width * (mobile ? .425 : .365), height * .71) * camera.zoom,
+        yawCos: Math.cos(camera.yaw),
+        yawSin: Math.sin(camera.yaw),
+        tiltCos: Math.cos(camera.tilt),
+        tiltSin: Math.sin(camera.tilt),
     };
+}
+
+function toView(x, y, z, frame) {
+    const dy = x * frame.yawSin + y * frame.yawCos;
+    return [
+        x * frame.yawCos - y * frame.yawSin,
+        dy * frame.tiltSin - z * frame.tiltCos,
+        dy * frame.tiltCos + z * frame.tiltSin,
+    ];
+}
+
+function projectOffset(point, frame) {
+    const [dx, dy, depth] = toView(
+        point[0] - camera.pivot[0],
+        point[1] - camera.pivot[1],
+        point[2] - camera.pivot[2],
+        frame,
+    );
+    // Positive depth is toward the viewer. Near bodies are larger and painted last.
+    const perspective = 1 / (1 - depth * PERSPECTIVE);
+    return {x: dx * perspective, y: dy * perspective, depth, perspective};
 }
 
 function project(point, frame) {
-    const [x, y, z] = point;
-    const dx = x * Math.cos(camera.yaw) - y * Math.sin(camera.yaw);
-    const dy = x * Math.sin(camera.yaw) + y * Math.cos(camera.yaw);
-    // Positive depth is toward the viewer. Near bodies are larger and painted last.
-    const depth = dy * Math.cos(camera.tilt) + z * Math.sin(camera.tilt);
-    const perspective = 1 / (1 - depth * .22);
+    const {x, y, depth, perspective} = projectOffset(point, frame);
     return {
-        x: frame.x + dx * frame.scale * perspective,
-        y: frame.y + (dy * Math.sin(camera.tilt) - z * Math.cos(camera.tilt)) * frame.scale * perspective,
-        depth,
-        perspective,
+        x: frame.centerX + (camera.screenX + x) * frame.scale,
+        y: frame.centerY + (camera.screenY + y) * frame.scale,
+        depth, perspective,
     };
 }
 
-function grabAnchor(x, y) {
-    const frame = cameraFrame(viewport.width, viewport.height);
-    const sx = (x - frame.x) / frame.scale;
-    const sy = (y - frame.y) / frame.scale;
-    const denominator = Math.sin(camera.tilt) + sy * Math.cos(camera.tilt) * .22;
-    // Pick a point on the orbital plane. Outside the map use the focal plane.
-    const planeY = denominator > .04 ? sy / denominator : Infinity;
-    const depth = Math.abs(planeY) < 1.35 ? planeY * Math.cos(camera.tilt) : 0;
-    const factor = 1 - depth * .22;
+function unproject(x, y, depth, frame) {
+    const sx = (x - frame.centerX) / frame.scale - camera.screenX;
+    const sy = (y - frame.centerY) / frame.scale - camera.screenY;
+    const factor = 1 - depth * PERSPECTIVE;
     const u = sx * factor;
     const v = sy * factor;
-    const dy = v * Math.sin(camera.tilt) + depth * Math.cos(camera.tilt);
+    const dy = v * frame.tiltSin + depth * frame.tiltCos;
     return [
-        u * Math.cos(camera.yaw) + dy * Math.sin(camera.yaw),
-        -u * Math.sin(camera.yaw) + dy * Math.cos(camera.yaw),
-        -v * Math.cos(camera.tilt) + depth * Math.sin(camera.tilt),
+        camera.pivot[0] + u * frame.yawCos + dy * frame.yawSin,
+        camera.pivot[1] - u * frame.yawSin + dy * frame.yawCos,
+        camera.pivot[2] - v * frame.tiltCos + depth * frame.tiltSin,
     ];
+}
+
+function grabAnchor(x, y, hit, frame) {
+    if (hit) return hit.world;
+    const sy = (y - frame.centerY) / frame.scale - camera.screenY;
+    const slope = frame.tiltSin + sy * frame.tiltCos * PERSPECTIVE;
+    // Intersect the orbital plane when stable, including views from below.
+    if (Math.abs(slope) > .04) {
+        const depth = (sy * frame.tiltCos - camera.pivot[2]) / slope;
+        const point = unproject(x, y, depth, frame);
+        if (Math.hypot(...point) <= MAX_PIVOT_DISTANCE) return point;
+    }
+    // Empty space uses the Sun's screen plane. Bound the pivot outside the map.
+    const sunDepth = projectOffset(DEFAULT_CAMERA.pivot, frame).depth;
+    const point = unproject(x, y, sunDepth, frame);
+    const distance = Math.hypot(...point);
+    return distance > MAX_PIVOT_DISTANCE ? point.map(value => value * (MAX_PIVOT_DISTANCE / distance)) : point;
+}
+
+function rotateTo(start, dx, dy) {
+    camera.yaw = start.yaw - dx;
+    camera.tilt = clamp(start.tilt + dy, -Math.PI / 2, Math.PI / 2);
+}
+
+function applyDrag(worldByBody) {
+    const {clientX, clientY, start, anchor, body, offsetX, offsetY} = drag;
+    const dx = clientX - drag.startX;
+    const dy = clientY - drag.startY;
+    const pivot = worldByBody.get(body?.id) ?? anchor;
+    rotateTo(start, dx * .006, dy * .006);
+    const frame = cameraFrame();
+    const rect = canvas.getBoundingClientRect();
+    if (!frame.scale) return;
+    // Start with the old pivot and ease into the grabbed point to avoid a jump in perspective.
+    const weight = clamp(Math.hypot(dx, dy) / 54, 0, 1);
+    camera.pivot = pivot.map((value, i) => (1 - weight) * start.pivot[i] + weight * value);
+    const offset = projectOffset(pivot, frame);
+    camera.screenX = (clientX - rect.left - frame.centerX + offsetX) / frame.scale - offset.x;
+    camera.screenY = (clientY - rect.top - frame.centerY + offsetY) / frame.scale - offset.y;
 }
 
 function bodyAt(x, y) {
@@ -217,18 +285,42 @@ function drawLabels(context, positions, width, height, mobile) {
     }
 }
 
+function drawEventLinks(context, positions) {
+    const earth = positions.find(position => position.body.id === "earth");
+    context.save();
+    context.lineWidth = 1.5;
+    context.setLineDash([4, 5]);
+    for (const {x, y, body} of positions) {
+        if (!eventBodyIds.includes(body.id)) continue;
+        context.beginPath();
+        context.moveTo(earth.x, earth.y);
+        context.lineTo(x, y);
+        context.strokeStyle = body.color + "db";
+        context.stroke();
+    }
+    context.restore();
+}
+
 function draw(time) {
     const {context, width, height} = viewport;
     if (!context || !width || !height) return;
     context.clearRect(0, 0, width, height);
     const mobile = width < 690;
+    const orbits = new Map();
+    const worldByBody = new Map();
+    for (const body of bodies) {
+        const orbit = body.elements ? orbitalElements(body, time) : null;
+        const point = orbit ? orbitPoint(orbit, currentAnomaly(orbit)) : [0, 0, 0];
+        orbits.set(body.id, orbit);
+        worldByBody.set(body.id, compressedPoint(point));
+    }
+    if (drag?.moved) applyDrag(worldByBody);
+    const frame = cameraFrame();
     const positions = [];
-    const frame = cameraFrame(width, height);
 
     for (const body of bodies) {
-        let point = [0, 0, 0];
-        if (body.elements) {
-            const orbit = orbitalElements(body, time);
+        const orbit = orbits.get(body.id);
+        if (orbit) {
             context.beginPath();
             for (let i = 0; i <= 120; i++) {
                 const step = project(compressedPoint(orbitPoint(orbit, i / 120 * TAU)), frame);
@@ -238,14 +330,14 @@ function draw(time) {
             context.strokeStyle = "#b2c1ee54";
             context.lineWidth = .85;
             context.stroke();
-            point = orbitPoint(orbit, currentAnomaly(orbit));
         }
-        const world = compressedPoint(point);
+        const world = worldByBody.get(body.id);
         const position = project(world, frame);
         const diameter = body.size * position.perspective * (mobile ? .76 : 1) * Math.sqrt(camera.zoom);
         positions.push({...position, diameter, body, world});
     }
 
+    if (eventBodyIds.length) drawEventLinks(context, positions);
     for (const {x, y, diameter, body} of positions.sort((a, b) => a.depth - b.depth)) {
         if (body.id === "sun") {
             glow(context, x, y, diameter * 2.7, "#ff9b4652");
@@ -292,13 +384,21 @@ function modelTime(frame = performance.now()) {
     return clamp(time, MIN_DATE, MAX_DATE);
 }
 
-function updateClockControls() {
+function updateClockControls(atLimit = false) {
     pauseButton.querySelector("[data-play]").toggleAttribute("hidden", !paused);
     pauseButton.querySelector("[data-pause]").toggleAttribute("hidden", paused);
     pauseButton.setAttribute("aria-label", paused ? "Продолжить время" : "Приостановить время");
     pauseButton.title = paused ? "Продолжить" : "Пауза";
     reverseButton.setAttribute("aria-pressed", String(direction < 0));
-    const mode = paused ? "Пауза" : live ? "Реальное время" : direction < 0 ? "Обратный ход" : "Модельное время";
+    forwardButton.setAttribute("aria-pressed", String(direction > 0));
+    const modes = [];
+    if (atLimit) modes.push("Предел модели");
+    else if (live) modes.push("Реальное время");
+    else {
+        if (paused) modes.push("Пауза");
+        modes.push(direction < 0 ? "Назад" : "Вперёд");
+    }
+    const mode = modes.join(" · ");
     timeMode.textContent = mode + " · МСК";
     timeMode.dataset.live = String(!paused && live && speed === 1);
 }
@@ -309,9 +409,68 @@ function zoom(multiplier) {
 }
 
 function moveCamera(dx, dy) {
-    camera.yaw += dx;
-    camera.tilt = clamp(camera.tilt + dy, .13, Math.PI / 2);
+    rotateTo(camera, dx, dy);
     dirty = true;
+}
+
+function setActiveEvent(button) {
+    for (const item of eventButtons) item.setAttribute("aria-pressed", String(item === button));
+    eventSelection.hidden = !button;
+    eventStatus.hidden = !button;
+    eventBodyIds = button ? button.dataset.bodies.split(" ") : [];
+    if (button) {
+        const time = new Date(button.dataset.date + "+03:00");
+        eventDate.dateTime = time.toISOString();
+        eventDate.textContent = clockFormatter.format(time);
+        eventDescription.textContent = button.dataset.description;
+        eventSource.href = button.dataset.source;
+        eventEphemeris.hidden = !button.dataset.ephemeris;
+        if (button.dataset.ephemeris) eventEphemeris.href = button.dataset.ephemeris;
+        eventStatus.textContent = button.textContent.trim();
+        eventSelection.parentElement.scrollTop = eventSelection.parentElement.scrollHeight;
+    } else {
+        eventStatus.textContent = "";
+    }
+    dirty = true;
+}
+
+function jumpTo(time) {
+    anchorTime = time;
+    anchorFrame = performance.now();
+    live = false;
+    paused = true;
+    dirty = true;
+    updateClockControls();
+}
+
+function setDirection(nextDirection) {
+    if (direction === nextDirection) return;
+    const now = performance.now();
+    anchorTime = modelTime(now);
+    anchorFrame = now;
+    direction = nextDirection;
+    live = false;
+    updateClockControls();
+}
+
+function movePointer(event) {
+    drag.clientX = event.clientX;
+    drag.clientY = event.clientY;
+    drag.moved ||= Math.hypot(drag.clientX - drag.startX, drag.clientY - drag.startY) >= 4;
+    if (drag.moved) dirty = true;
+}
+
+function endDrag(event) {
+    if (drag?.id !== event.pointerId) return;
+    if (event.type === "pointerup") movePointer(event);
+    if (drag.moved) {
+        draw(modelTime());
+    } else if (event.type === "pointerup") {
+        selectBody(drag.body && selected !== drag.body ? drag.body : null);
+    }
+    drag = null;
+    delete canvas.dataset.dragging;
+    if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
 }
 
 function frame(now) {
@@ -322,8 +481,7 @@ function frame(now) {
         live = false;
         paused = true;
         dirty = true;
-        updateClockControls();
-        timeMode.textContent = "Предел модели · МСК";
+        updateClockControls(true);
     }
     const second = Math.floor(time / 1000);
     const secondChanged = second !== lastSecond;
@@ -361,28 +519,27 @@ if (initialContext) {
         (objectPanel.open && button ? button : objectPanel.querySelector("summary")).focus({preventScroll: true});
     });
     pauseButton.addEventListener("click", () => {
-        anchorTime = modelTime();
-        anchorFrame = performance.now();
+        const now = performance.now();
+        anchorTime = modelTime(now);
+        anchorFrame = now;
         paused = !paused;
         if (paused) live = false;
+        dirty = true;
         updateClockControls();
     });
     speedSelect.addEventListener("change", () => {
-        anchorTime = modelTime();
-        anchorFrame = performance.now();
+        const now = performance.now();
+        anchorTime = modelTime(now);
+        anchorFrame = now;
         speed = Number(speedSelect.value);
         if (speed !== 1) live = false;
         updateClockControls();
     });
-    reverseButton.addEventListener("click", () => {
-        anchorTime = modelTime();
-        anchorFrame = performance.now();
-        direction *= -1;
-        live = false;
-        updateClockControls();
-    });
+    reverseButton.addEventListener("click", () => setDirection(-1));
+    forwardButton.addEventListener("click", () => setDirection(1));
     datePanel.addEventListener("toggle", () => {
         if (!datePanel.open) return;
+        eventPanel.open = false;
         dateInput.value = new Date(modelTime() + MOSCOW_OFFSET).toISOString().slice(0, 16);
         dateInput.focus({preventScroll: true});
     });
@@ -395,14 +552,28 @@ if (initialContext) {
         event.preventDefault();
         const time = Date.parse(dateInput.value + "+03:00");
         if (!Number.isFinite(time) || time < MIN_DATE || time > MAX_DATE) return;
-        anchorTime = time;
-        anchorFrame = performance.now();
-        live = false;
-        paused = true;
-        dirty = true;
+        setActiveEvent(null);
+        jumpTo(time);
         datePanel.open = false;
         datePanel.querySelector("summary").focus({preventScroll: true});
-        updateClockControls();
+    });
+    eventPanel.addEventListener("toggle", () => {
+        if (eventPanel.open) datePanel.open = false;
+    });
+    eventPanel.addEventListener("keydown", event => {
+        if (event.key !== "Escape" || !eventPanel.open) return;
+        eventPanel.open = false;
+        eventPanel.querySelector("summary").focus({preventScroll: true});
+    });
+    for (const button of eventButtons) {
+        button.addEventListener("click", () => {
+            jumpTo(Date.parse(button.dataset.date + "+03:00"));
+            setActiveEvent(button);
+        });
+    }
+    document.querySelector("#solar-view-event").addEventListener("click", () => {
+        eventPanel.open = false;
+        canvas.focus({preventScroll: true});
     });
     document.querySelector("#solar-now").addEventListener("click", () => {
         anchorTime = Date.now();
@@ -412,11 +583,12 @@ if (initialContext) {
         speedSelect.value = "1";
         live = true;
         paused = false;
-        dirty = true;
+        setActiveEvent(null);
         updateClockControls();
     });
     for (const control of document.querySelectorAll("[data-camera]")) {
         control.addEventListener("click", () => {
+            if (drag) return;
             if (control.dataset.camera === "reset") {
                 Object.assign(camera, DEFAULT_CAMERA);
                 dirty = true;
@@ -424,45 +596,34 @@ if (initialContext) {
         });
     }
     canvas.addEventListener("pointerdown", event => {
-        if (!event.isPrimary || event.button !== 0) return;
+        if (drag || !event.isPrimary || event.button !== 0 || !viewport.width || !viewport.height) return;
+        if (dirty) draw(modelTime());
         const bounds = canvas.getBoundingClientRect();
         const x = event.clientX - bounds.left;
         const y = event.clientY - bounds.top;
         const hit = bodyAt(x, y);
+        const frame = cameraFrame();
+        const anchor = grabAnchor(x, y, hit, frame);
+        const projected = project(anchor, frame);
         drag = {
-            x: event.clientX, y: event.clientY, yaw: camera.yaw, tilt: camera.tilt,
-            anchor: hit?.world ?? grabAnchor(x, y),
-            offsetX: hit ? x - hit.x : 0, offsetY: hit ? y - hit.y : 0,
-            moved: false,
+            id: event.pointerId,
+            startX: event.clientX, startY: event.clientY, clientX: event.clientX, clientY: event.clientY,
+            start: {...camera},
+            body: hit?.body, anchor,
+            offsetX: projected.x - x, offsetY: projected.y - y, moved: false,
         };
         canvas.setPointerCapture(event.pointerId);
+        canvas.dataset.dragging = "";
     });
     canvas.addEventListener("pointermove", event => {
-        if (!drag || !event.isPrimary) return;
-        const dx = event.clientX - drag.x;
-        const dy = event.clientY - drag.y;
-        if (!drag.moved && Math.hypot(dx, dy) < 4) return;
-        camera.yaw = drag.yaw + dx * .005;
-        camera.tilt = clamp(drag.tilt + dy * .005, .13, Math.PI / 2);
-        const bounds = canvas.getBoundingClientRect();
-        const projected = project(drag.anchor, cameraFrame(viewport.width, viewport.height));
-        camera.panX += event.clientX - bounds.left - projected.x - drag.offsetX;
-        camera.panY += event.clientY - bounds.top - projected.y - drag.offsetY;
-        drag.moved = true;
-        dirty = true;
+        if (drag?.id === event.pointerId) movePointer(event);
     });
-    canvas.addEventListener("pointerup", event => {
-        if (drag && !drag.moved) {
-            const bounds = canvas.getBoundingClientRect();
-            const hit = bodyAt(event.clientX - bounds.left, event.clientY - bounds.top);
-            selectBody(hit?.body && selected !== hit.body ? hit.body : null);
-        }
-        drag = null;
-    });
-    canvas.addEventListener("pointercancel", () => { drag = null; });
-    canvas.addEventListener("lostpointercapture", () => { drag = null; });
+    canvas.addEventListener("pointerup", endDrag);
+    canvas.addEventListener("pointercancel", endDrag);
+    canvas.addEventListener("lostpointercapture", endDrag);
     canvas.addEventListener("keydown", event => {
-        const delta = {ArrowLeft: [-.13, 0], ArrowRight: [.13, 0], ArrowUp: [0, -.09], ArrowDown: [0, .09]}[event.key];
+        if (drag) return;
+        const delta = {ArrowLeft: [0.13, 0], ArrowRight: [-.13, 0], ArrowUp: [0, -.09], ArrowDown: [0, .09]}[event.key];
         if (delta) moveCamera(...delta);
         else if (event.key === "+" || event.key === "=") zoom(1.21);
         else if (event.key === "-") zoom(1 / 1.21);
@@ -472,8 +633,9 @@ if (initialContext) {
     canvas.addEventListener("wheel", event => {
         if (event.ctrlKey) return;
         event.preventDefault();
-        zoom(event.deltaY < 0 ? 1.09 : 1 / 1.09);
+        if (!drag) zoom(event.deltaY < 0 ? 1.09 : 1 / 1.09);
     }, {passive: false});
+    updateClockControls();
     requestAnimationFrame(frame);
 } else {
     document.querySelector("#solar-fallback").hidden = false;

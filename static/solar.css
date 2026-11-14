@@ -18,6 +18,7 @@
     background: radial-gradient(ellipse at 55% 54%, #1b2945 0%, #0a1425 52%, #080d18 100%);
 }
 .solar-page .observatory__scene { height: 100%; }
+.solar-page .observatory__scene[data-dragging] { cursor: grabbing; }
 .solar-heading {
     position: absolute;
     top: clamp(106px, 16vh, 158px);
@@ -86,8 +87,87 @@
 }
 .scene-caption .quiet-link { display: inline-block; margin-top: 5px; }
 .solar-page .camera-controls { position: absolute; inset: auto var(--gutter) 23px auto; }
+.solar-events {
+    position: absolute;
+    z-index: 2;
+    right: var(--gutter);
+    bottom: 84px;
+}
+.solar-events > summary { list-style: none; }
+.solar-events > summary::-webkit-details-marker { display: none; }
+.solar-events > summary::after {
+    content: "";
+    width: 6px;
+    height: 6px;
+    margin: 2px 0 0 2px;
+    border: solid currentColor;
+    border-width: 1px 0 0 1px;
+    transform: translateY(1px) rotate(45deg);
+}
+.solar-events[open] > summary::after { transform: translateY(-2px) rotate(225deg); }
+.solar-events__panel {
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + 9px);
+    width: min(340px, calc(100vw - 2 * var(--gutter)));
+    max-height: min(490px, calc(100dvh - 164px));
+    overflow: auto;
+    overscroll-behavior: contain;
+    display: grid;
+    gap: 11px;
+    padding: 12px;
+    border-radius: 16px;
+    background: #122039f5;
+    color: #c7d5ea;
+    font-size: .75rem;
+    line-height: 1.45;
+}
+.solar-events__list {
+    display: grid;
+    gap: 4px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+.solar-event {
+    width: 100%;
+    min-height: 34px;
+    justify-content: flex-start;
+    padding: 6px 10px;
+    border-radius: 8px;
+    text-align: left;
+    font-size: inherit;
+}
+.solar-event[aria-pressed="true"] {
+    border-color: #a3e6f9;
+    color: #e6f9ff;
+    background: #4485a74c;
+}
+.solar-events__selection {
+    display: grid;
+    gap: 5px;
+    padding-top: 8px;
+    border-top: 1px solid var(--line);
+}
+.solar-events__selection time { color: #e9f1ff; }
+.solar-events__selection a, #solar-view-event { justify-self: start; }
+#solar-view-event { min-height: 34px; }
+.scene-event-active {
+    position: absolute;
+    left: 50%;
+    bottom: 79px;
+    transform: translateX(-50%);
+    max-width: min(410px, calc(100% - 32px));
+    padding: 6px 12px;
+    border-radius: 12px;
+    color: #d2e6fa;
+    text-align: center;
+    font-size: .72rem;
+    pointer-events: none;
+}
 .solar-page .time-controls {
     position: absolute;
+    z-index: 1;
     left: 50%;
     bottom: 23px;
     transform: translateX(-50%);
@@ -108,7 +188,8 @@
     stroke-linecap: round;
 }
 .time-transport [data-play] { fill: currentColor; }
-#solar-reverse[aria-pressed="true"] {
+.time-direction svg { fill: currentColor; stroke: none; }
+.time-direction[aria-pressed="true"] {
     border-color: #a3e6f9;
     color: #c6f6ff;
     background: #4485a74c;
@@ -140,6 +221,9 @@
     .solar-page .object-detail { top: calc(clamp(106px, 16vh, 158px) + 79px); }
     .solar-page .scene-caption { bottom: 81px; }
     .solar-page .camera-controls { bottom: 78px; }
+    .solar-events { bottom: 133px; }
+    .solar-events__panel { max-height: min(490px, calc(100dvh - 203px)); }
+    .scene-event-active { bottom: 133px; }
 }
 @media (max-width: 720px) {
     .solar-heading { top: 91px; right: var(--gutter); }
@@ -159,14 +243,21 @@
     .solar-page .object-facts dd { font-size: .72rem; }
     .solar-page .scene-caption { bottom: 77px; max-width: 19ch; }
     .solar-page .camera-controls { bottom: 74px; }
+    .solar-events { bottom: 127px; }
+    .solar-events__panel { max-height: min(490px, calc(100dvh - 205px)); }
+    .scene-event-active { bottom: 184px; width: max-content; }
     .solar-page .time-controls { bottom: 14px; gap: 3px; }
     .solar-page .scene-time { min-width: 0; padding-inline: 4px; }
     .solar-page .scene-time time { font-size: .68rem; }
     .solar-page .scene-time__status { font-size: .59rem; }
-    .solar-date form { right: -55px; }
+    .solar-date form { right: -55px; bottom: calc(100% + 23px); }
 }
 @media (max-width: 390px) {
     .solar-page .time-controls .icon-button { width: 29px; }
     .solar-page #solar-now { padding-inline: 7px; font-size: .67rem; }
     .solar-page .speed-select { max-width: 67px; }
+}
+@media (max-width: 360px) {
+    .solar-page .time-controls { display: grid; grid-template-columns: repeat(4, auto); }
+    .solar-page .scene-time { grid-column: 1 / -1; grid-row: 1; justify-items: center; }
 }

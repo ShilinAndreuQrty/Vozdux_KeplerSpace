@@ -4,7 +4,6 @@ import io
 import json
 import math
 import os
-import re
 from collections import defaultdict
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -14,16 +13,18 @@ from tempfile import NamedTemporaryFile
 from urllib.parse import quote, urlencode, urljoin, urlparse
 from urllib.request import Request, urlopen
 
+from draft_math import central, evaluate_planet, habitable_zone, orbit_summary, positive
 
 ARCHIVE = "https://exoplanetarchive.ipac.caltech.edu"
 CALCULATIONS = ARCHIVE + "/docs/pscp_calc.html"
 HZ_MODEL = "https://arxiv.org/abs/2611.09475"
+ESI_MODEL = "https://phl.upr.edu/projects/earth-similarity-index-esi"
 DATA_DIR = Path(__file__).resolve().parent / "data"
 BUNDLED = DATA_DIR / "catalog.json"
 LOCAL = DATA_DIR / "catalog.local.json"
 EXAMPLE = "55 Cnc e"
 TOP_COUNT = 50
-CATALOG_VERSION = 2
+CATALOG_VERSION = 6
 LIGHT_YEARS_PER_PC = 3.26156
 
 FIELDS = {
@@ -33,14 +34,14 @@ FIELDS = {
     "axis": "pl_orbsmax",
     "eccentricity": "pl_orbeccen",
     "period": "pl_orbper",
-    "temperature": "pl_eqt",
+    "equilibrium_temperature": "pl_eqt",
     "star_temperature": "st_teff",
     "star_log_luminosity": "st_lum",
     "star_radius": "st_rad",
     "star_mass": "st_mass",
     "star_rotation": "st_rotp",
 }
-COLUMNS = (
+REQUIRED_COLUMNS = (
     "pl_name", "hostname", "discoverymethod", "disc_year", "pl_controv_flag", "cb_flag",
     "sy_snum", "sy_dist", "pl_bmassj", "pl_bmassprov", "st_spectype",
     "st_spectype_reflink", "st_logg", "pl_ntranspec", "pl_nespec", "pl_ndispec",
@@ -48,6 +49,21 @@ COLUMNS = (
     "pl_bmasseerr1", "pl_bmasseerr2",
     *(column + suffix for column in FIELDS.values() for suffix in ("", "lim", "_reflink")),
 )
+COLUMNS = REQUIRED_COLUMNS + (
+    "pl_orbsmaxerr1", "pl_orbsmaxerr2", "pl_orbeccenerr2", "pl_orbpererr1", "pl_orbpererr2",
+    "pl_eqterr1", "pl_eqterr2", "st_tefferr1", "st_tefferr2", "st_lumerr1", "st_lumerr2",
+)
+FIELD_LABELS = {
+    "radius": "радиус",
+    "mass": "полная масса",
+    "density": "средняя плотность",
+    "escape_velocity": "скорость убегания",
+    "axis": "большая полуось",
+    "eccentricity": "эксцентриситет орбиты",
+    "star_temperature": "температура звезды",
+    "star_luminosity": "светимость звезды",
+    "surface_temperature": "температура поверхности",
+}
 
 DISCOVERY_METHODS = {
     "Transit": "Транзит",
@@ -133,10 +149,10 @@ def reference(raw):
 
 
 def number(row, key):
-    raw = row.get(key)
-    if raw is None or not raw.strip():
+    try:
+        value = float(row.get(key))
+    except (TypeError, ValueError):
         return None
-    value = float(raw)
     return value if math.isfinite(value) else None
 
 
@@ -147,24 +163,25 @@ def metric(row, field):
         return None
     source = reference(row.get(column + "_reflink"))
     limit = number(row, column + "lim")
-    kind = "archive_estimate" if source and source["label"].casefold() == "calculated value" else "published"
-    if field == "temperature":
-        kind = "archive_estimate" if kind == "archive_estimate" else "model"
-    elif field == "mass" and kind == "published":
-        provenance = row["pl_bmassprov"].casefold()
-        if provenance in {"msini", "m*sini"}:
-            kind = "minimum"
-        elif "sin(i)" in provenance or provenance == "m-r relationship":
-            kind = "model"
-    elif field == "eccentricity" and value == 0 and not number(row, "pl_orbeccenerr1"):
-        kind = "assumption"
     plus = number(row, column + "err1")
     minus = number(row, column + "err2")
+    kind = "published" if source and source["label"] else "unknown"
+    if source and source["label"].casefold() == "calculated value":
+        source = {"label": "Расчёт NASA Exoplanet Archive", "url": CALCULATIONS}
+        kind = "archive_estimate"
+    elif field == "equilibrium_temperature":
+        kind = "model"
+    elif field == "mass":
+        provenance = "".join(char for char in (row.get("pl_bmassprov") or "").casefold() if char.isalnum())
+        if provenance == "msini":
+            kind = "minimum"
+        elif provenance in {"msinisini", "mrrelationship"}:
+            kind = "model"
+        elif provenance != "mass":
+            kind = "unknown"
+    elif field == "eccentricity" and value == 0 and not limit and not (plus or minus):
+        kind = "assumption"
     return {"value": value, "kind": kind, "limit": limit or 0, "source": source, "plus": plus, "minus": minus}
-
-
-def central(field):
-    return field["value"] if field is not None and not field["limit"] else None
 
 
 def estimate(value, label, url):
@@ -174,129 +191,38 @@ def estimate(value, label, url):
     }
 
 
-def earth_similarity(radius, flux):
-    radius_delta = abs(radius - 1) / (radius + 1)
-    flux_delta = abs(flux - 1) / (flux + 1)
-    return {
-        "score": 1 - math.hypot(radius_delta, flux_delta) / math.sqrt(2),
-        "radius_similarity": 1 - radius_delta,
-        "flux_similarity": 1 - flux_delta,
-    }
-
-
-def habitable_zone(temperature, luminosity, circumbinary=False, spectral_type="", gravity=None):
-    if circumbinary:
-        return {"reason": "Для орбиты вокруг двух звёзд нужна модель с учётом обеих звёзд."}
-    if (gravity is not None and gravity < 3.6) or re.search(r"(?<![A-Z])(?:III|IV|II|I[ab]?)\b", spectral_type or ""):
-        return {"reason": "Модель рассчитана для звёзд главной последовательности."}
-    if temperature is None or luminosity is None or luminosity <= 0:
-        return {"reason": "Для расчёта нужны температура и светимость звезды."}
-    if not 2000 <= temperature <= 7200:
-        return {"reason": "Температура звезды за пределами модели (2 000–7 200 К)."}
-
-    # Haqq-Misra, Wolf & Kopparapu (2026), ExoColumn, Table 1.
-    offset = temperature - 5780
-    coefficients = (
-        (1.0684, 9.1544e-5, 1.6309e-8, 1.7962e-12, 1.2497e-16),
-        (0.3851, 7.1906e-5, 3.2723e-9, -3.2530e-12, -5.4811e-16),
-    )
-    distances = [
-        math.sqrt(luminosity / sum(coefficient * offset ** power for power, coefficient in enumerate(edge)))
-        for edge in coefficients
-    ]
-    return {"inner": distances[0], "outer": distances[1]}
-
-
-def orbit_summary(axis, eccentricity, zone):
-    result = {"axis": axis, "eccentricity": eccentricity, "near": None, "far": None, "fraction": None}
-    if axis is None or axis <= 0 or eccentricity is None or not 0 <= eccentricity < 1:
-        return result
-    near = axis * (1 - eccentricity)
-    far = axis * (1 + eccentricity)
-    result.update(near=near, far=far)
-    if "inner" not in zone:
-        return result
-
-    inner, outer = zone["inner"], zone["outer"]
-    if eccentricity == 0:
-        fraction = float(inner <= axis <= outer)
-    else:
-        # Mean anomaly grows linearly in time. The outward half-orbit is symmetric.
-        def time_inside(distance):
-            if distance <= near:
-                return 0
-            if distance >= far:
-                return 1
-            anomaly = math.acos(max(-1, min(1, (1 - distance / axis) / eccentricity)))
-            return (anomaly - eccentricity * math.sin(anomaly)) / math.pi
-
-        fraction = time_inside(outer) - time_inside(inner)
-    result["fraction"] = fraction
-    return result
-
-
-def habitability(metrics, zone, orbit, giant):
-    radius = central(metrics["radius"])
-    if radius is None or not 0 < radius < 2.5 or giant or "inner" not in zone:
-        return None
-    distance = orbit["axis"]
-    basis = "axis"
-    if not distance or distance <= 0:
-        luminosity = central(metrics["star_luminosity"])
-        flux = central(metrics["flux"])
-        if not luminosity or not flux or flux <= 0:
-            return None
-        distance = math.sqrt(luminosity / flux)
-        basis = "flux"
-
-    # The zone gets most of the weight. Close passes just outside its edges
-    # retain a small score so that the boundaries of the model aren't absolute.
-    inner, outer = zone["inner"], zone["outer"]
-    fraction = orbit["fraction"]
-    distance_ratio = max(inner / distance, distance / outer, 1)
-    proximity = distance_ratio ** -4
-    zone_points = 56 * fraction + 14 * proximity if fraction is not None else 60 * proximity
-
-    # Radius is an indirect indicator. Do not derive density from M sin(i)
-    # or from a mass–radius relation.
-    size = min(1, max(0, (radius - .35) / .4), (2.5 - radius) / 1.1)
-    mass_field = metrics["mass"]
-    mass = central(mass_field)
-    density = None
-    if mass and mass > 0 and mass_field["kind"] == metrics["radius"]["kind"] == "published":
-        density = 5.514 * mass / radius ** 3
-    density_factor = .85 if density is None else .4 + .6 * min(1, max(0, (density - 1.5) / 2.5))
-    surface_points = 30 * size * density_factor
-    return {
-        "score": zone_points + surface_points, "zone": zone_points, "surface": surface_points,
-        "basis": "orbit" if fraction is not None else basis, "density": density,
-    }
-
-
 def planet_metrics(row):
     metrics = {field: metric(row, field) for field in FIELDS}
+    # PSCompPars supplies equilibrium temperature, which is independent of this input to the ESI.
+    metrics["surface_temperature"] = None
     circumbinary = row["cb_flag"] == "1"
     axis = central(metrics["axis"])
     if axis and row["discoverymethod"] in {"Microlensing", "Imaging"}:
         # The archive can use this column for projected separation for these methods.
         metrics["axis"] = None
         axis = None
-    if (axis is None or axis <= 0) and not circumbinary:
+    if not positive(axis) and not circumbinary:
         period = central(metrics["period"])
         star_mass = central(metrics["star_mass"])
-        if period and period > 0 and star_mass and star_mass > 0:
+        if positive(period) and positive(star_mass):
             metrics["axis"] = estimate(
                 (star_mass * (period / 365.25) ** 2) ** (1 / 3),
                 "Расчёт из периода и массы звезды по третьему закону Кеплера",
                 None,
             )
             axis = central(metrics["axis"])
-    luminosity_log = central(metrics["star_log_luminosity"])
+    log_field = metrics.pop("star_log_luminosity")
+    luminosity_log = central(log_field)
     star_radius = central(metrics["star_radius"])
     star_temperature = central(metrics["star_temperature"])
     if luminosity_log is not None:
-        metrics["star_luminosity"] = {**metrics["star_log_luminosity"], "value": 10 ** luminosity_log}
-    elif star_radius and star_radius > 0 and star_temperature and star_temperature > 0:
+        luminosity = 10 ** luminosity_log
+        metrics["star_luminosity"] = {
+            **log_field, "value": luminosity,
+            **{key: luminosity * math.expm1(log_field[key] * math.log(10)) if log_field[key] is not None else None
+               for key in ("plus", "minus")},
+        }
+    elif positive(star_radius) and positive(star_temperature):
         metrics["star_luminosity"] = estimate(
             star_radius ** 2 * (star_temperature / 5772) ** 4,
             "Расчёт из радиуса и температуры звезды",
@@ -304,30 +230,25 @@ def planet_metrics(row):
         )
     else:
         metrics["star_luminosity"] = None
-    del metrics["star_log_luminosity"]
     luminosity = central(metrics["star_luminosity"])
-    if metrics["flux"] is None and luminosity and axis and axis > 0 and not circumbinary:
+    if metrics["flux"] is None and positive(luminosity) and positive(axis) and not circumbinary:
         metrics["flux"] = estimate(luminosity / axis ** 2, "Расчёт из светимости и большой полуоси", CALCULATIONS)
     return metrics
 
 
-def build_catalog(rows, fetched_at):
+def build_catalog(rows, fetched_at, retained_hosts=()):
     if len(rows) < 1000 or len({row.get("pl_name") for row in rows}) != len(rows):
         raise ValueError("NASA вернула неполную таблицу или повторяющиеся записи.")
-    if not set(COLUMNS).issubset(rows[0]):
+    if not set(REQUIRED_COLUMNS).issubset(rows[0]):
         raise ValueError("Структура таблицы NASA изменилась.")
 
-    systems = defaultdict(list)
-    ranking, previous_ranking = [], []
+    systems = defaultdict(dict)
+    ranking = []
     for row in rows:
         if row["pl_controv_flag"] == "1" or not row["pl_name"] or not row["hostname"]:
             continue
         metrics = planet_metrics(row)
-        radius, flux = (central(metrics[key]) for key in ("radius", "flux"))
-        similarity = earth_similarity(radius, flux) if radius and radius > 0 and flux and flux > 0 else None
         name, host = row["pl_name"], row["hostname"]
-        if similarity:
-            previous_ranking.append((name, host, similarity["score"]))
         spectral_type = row["st_spectype"] or None
         circumbinary = row["cb_flag"] == "1"
         zone = habitable_zone(
@@ -335,44 +256,37 @@ def build_catalog(rows, fetched_at):
             circumbinary, spectral_type, number(row, "st_logg"),
         )
         eccentricity = metrics["eccentricity"]
-        measured_e = central(eccentricity) if eccentricity and eccentricity["kind"] != "assumption" else None
+        measured_e = central(eccentricity) if eccentricity and eccentricity["kind"] == "published" else None
         axis = None if circumbinary else central(metrics["axis"])
         orbit = orbit_summary(axis, measured_e, zone)
         giant = giant_kind(row, metrics)
-        index = habitability(metrics, zone, orbit, giant)
-        if index:
-            ranking.append((name, host, index["score"]))
-        systems[host].append((row, metrics, similarity, zone, orbit, giant, index))
+        evaluation = evaluate_planet(metrics, zone, orbit, giant)
+        priority = evaluation["priority"]
+        if priority is not None:
+            ranking.append((name, host, priority["score"]))
+        distance = number(row, "sy_dist")
+        systems[host][name] = {
+            "name": name, "host": host, "rank": None, **evaluation,
+            "distance": distance * LIGHT_YEARS_PER_PC if distance is not None else None,
+            "method": DISCOVERY_METHODS.get(row["discoverymethod"], row["discoverymethod"]),
+            "year": int(row["disc_year"]) if row["disc_year"] else None,
+            "metrics": metrics, "zone": zone, "giant": giant,
+            "orbit": orbit, "circumbinary": circumbinary,
+            "spectral_type": spectral_type,
+            "spectral_source": reference(row["st_spectype_reflink"]),
+            "stars": int(row["sy_snum"] or 0),
+            "spectra": sum(int(row[column] or 0) for column in ("pl_ntranspec", "pl_nespec", "pl_ndispec")),
+        }
 
-    def rank_key(entry):
-        return -entry[2], entry[0].casefold()
-
-    ranking.sort(key=rank_key)
+    ranking.sort(key=lambda entry: (-entry[2], entry[0].casefold()))
     top = [name for name, _, _ in ranking[:TOP_COUNT]]
-    ranks = {name: position for position, name in enumerate(top, 1)}
     hosts = {host for _, host, _ in ranking[:TOP_COUNT]}
-    # Keep the systems linked from the previous version of the ESI ranking.
-    hosts.update(host for _, host, _ in sorted(previous_ranking, key=rank_key)[:TOP_COUNT])
-    if any(item[0]["pl_name"] == EXAMPLE for item in systems["55 Cnc"]):
+    hosts.update(systems.keys() & set(retained_hosts))
+    if EXAMPLE in systems.get("55 Cnc", {}):
         hosts.add("55 Cnc")
-    planets = {}
-    for host in sorted(hosts):
-        for row, metrics, similarity, zone, orbit, giant, index in systems[host]:
-            name = row["pl_name"]
-            distance = number(row, "sy_dist")
-            planets[name] = {
-                "name": name, "host": host, "rank": ranks.get(name), "similarity": similarity, "habitability": index,
-                "distance": distance * LIGHT_YEARS_PER_PC if distance is not None else None,
-                "method": DISCOVERY_METHODS.get(row["discoverymethod"], row["discoverymethod"]),
-                "year": int(row["disc_year"]) if row["disc_year"] else None,
-                "metrics": metrics, "zone": zone, "giant": giant,
-                "orbit": orbit,
-                "circumbinary": row["cb_flag"] == "1",
-                "spectral_type": row["st_spectype"] or None,
-                "spectral_source": reference(row["st_spectype_reflink"]),
-                "stars": int(row["sy_snum"] or 0),
-                "spectra": sum(int(row[column] or 0) for column in ("pl_ntranspec", "pl_nespec", "pl_ndispec")),
-            }
+    planets = {name: planet for host in sorted(hosts) for name, planet in systems[host].items()}
+    for rank, name in enumerate(top, 1):
+        planets[name]["rank"] = rank
     if len(top) != TOP_COUNT:
         raise ValueError("В выгрузке недостаточно данных для топ-50.")
     return {
@@ -410,6 +324,7 @@ def planet_context(catalog, name):
         "distances": distance_chart(planet, siblings),
         "activity": ACTIVITY_NOTES.get(planet["host"]),
         "atmosphere": ATMOSPHERE_NOTES.get(name),
+        "field_labels": FIELD_LABELS,
         "archive_url": ARCHIVE + "/overview/" + quote(name, safe=""),
     }
 
@@ -417,9 +332,9 @@ def planet_context(catalog, name):
 def distance_chart(planet, siblings):
     zone = planet["zone"]
     entries = [(item, item["orbit"]) for item in siblings if item["orbit"]["axis"] and item["orbit"]["axis"] > 0]
-    if not entries and "outer" not in zone:
+    if not entries and not zone["available"]:
         return None
-    edges = [zone["inner"], zone["outer"]] if "outer" in zone else []
+    edges = [zone["inner"], zone["outer"]] if zone["available"] else []
     distances = edges + [value for _, orbit in entries for value in
                          (orbit["near"] or orbit["axis"], orbit["far"] or orbit["axis"])]
     maximum = max(distances)
@@ -452,6 +367,19 @@ def read_csv(payload):
     return list(csv.DictReader(io.StringIO(payload.decode("utf-8-sig"), newline="")))
 
 
+def retained_catalog_hosts():
+    # Preserve links to planets from earlier rankings across snapshot updates.
+    hosts = set()
+    for path in (BUNDLED, LOCAL):
+        try:
+            with path.open(encoding="utf-8") as source:
+                catalog = json.load(source)
+            hosts.update(planet["host"] for planet in catalog["planets"].values())
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            continue
+    return hosts
+
+
 def fetch_catalog():
     query = "select " + ",".join(COLUMNS) + " from pscomppars"
     url = ARCHIVE + "/TAP/sync?" + urlencode({"query": query, "format": "csv", "maxrec": 30000})
@@ -460,10 +388,11 @@ def fetch_catalog():
         payload = response.read(25_000_001)
     if len(payload) > 25_000_000:
         raise ValueError("Выгрузка NASA превысила ожидаемый размер.")
-    return build_catalog(read_csv(payload), datetime.now(timezone.utc))
+    return build_catalog(read_csv(payload), datetime.now(timezone.utc), retained_catalog_hosts())
 
 
-def save_catalog(catalog, path=LOCAL):
+def save_catalog(catalog, path=None):
+    path = LOCAL if path is None else path
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = None
     try:
@@ -504,7 +433,7 @@ def main():
     args = parser.parse_args()
     if args.csv:
         fetched_at = datetime.fromtimestamp(args.csv.stat().st_mtime, timezone.utc)
-        catalog = build_catalog(read_csv(args.csv.read_bytes()), fetched_at)
+        catalog = build_catalog(read_csv(args.csv.read_bytes()), fetched_at, retained_catalog_hosts())
     else:
         catalog = fetch_catalog()
     save_catalog(catalog, args.output)

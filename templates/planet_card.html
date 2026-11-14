@@ -1,11 +1,15 @@
 {% macro source(url, label) -%}
-    <a class="source-arrow" href="{{ url }}" aria-label="{{ label }}" title="{{ label }}">↗</a>
+    <a class="source-arrow" href="{{ url }}" aria-label="{{ label }}" title="{{ label }}"{% if url.startswith('https://') %} target="_blank" rel="noopener noreferrer"{% endif %}>↗</a>
 {%- endmacro %}
 
 {% macro amount(field, unit='', digits=2) -%}
     {% if field %}
         {% if field.limit == 1 %}&lt; {% elif field.limit == -1 %}&gt; {% endif -%}
-        {{ field.value|number(digits) }}{% if unit %} <span class="unit">{{ unit }}</span>{% endif %}
+        {{ field.value|number(digits) }}
+        {%- if not field.limit and field.plus is not none and field.minus is not none %}
+            <small class="measurement-error">+{{ field.plus|abs|number(digits) }} / −{{ field.minus|abs|number(digits) }}</small>
+        {%- endif %}
+        {% if unit %} <span class="unit">{{ unit }}</span>{% endif %}
     {% else %}Нет данных{% endif %}
 {%- endmacro %}
 
@@ -13,19 +17,25 @@
     {% if field %}
         {% if field.kind in ['archive_estimate', 'model'] %}<small>Оценка</small>
         {% elif field.kind == 'minimum' %}<small>Минимальная масса</small>
-        {% elif field.kind == 'assumption' %}<small>Принято в модели</small>{% endif %}
+        {% elif field.kind == 'assumption' %}<small>Круговая орбита принята в публикации</small>
+        {% elif field.kind == 'unknown' %}<small>Происхождение неизвестно</small>{% endif %}
     {% endif %}
 {%- endmacro %}
 
 {% macro stat(label, field, unit='', digits=2) %}
     <div>
         <dt>{{ label }}</dt>
-        <dd>{{ amount(field, unit, digits) }} {{ status(field) }}</dd>
+        <dd>{{ amount(field, unit, digits) }} {{ status(field) }}
+            {% if field and field.source and field.source.url %}{{ source(field.source.url, field.source.label) }}{% endif %}</dd>
     </div>
 {% endmacro %}
 
+{% macro field_list(keys) -%}
+    {% for key in keys %}{{ field_labels[key] }}{{ ', ' if not loop.last }}{% endfor %}.
+{%- endmacro %}
+
 {% set m = planet.metrics %}
-{% set index = planet.habitability %}
+{% set priority = planet.priority %}
 {% set zone = planet.zone %}
 {% set orbit = planet.orbit %}
 <article class="planet-card" aria-labelledby="planet-name" data-selected="{{ planet.name }}">
@@ -42,11 +52,11 @@
                 {{ planet.method }}{% if planet.year %} · {{ planet.year }}{% endif %}
                 {% if planet.distance is not none %} · {{ planet.distance|number(1) }} св. лет{% endif %}
             </p>
-            {% if index %}
+            {% if priority %}
                 <div class="score-chip glass liquid">
                     <div>
-                        <span class="score-chip__label">Индекс обитаемости</span>
-                        <div><strong>{{ index.score|number(1) }}</strong><small> из 100</small></div>
+                        <span class="score-chip__label">Приоритет для наблюдений</span>
+                        <div><strong>{{ priority.score|number(1) }}</strong><small> из 100</small></div>
                     </div>
                     <span class="score-chip__rank">{{ '№ ' ~ planet.rank if planet.rank else 'Вне топ‑50' }}</span>
                 </div>
@@ -54,28 +64,26 @@
         </div>
     </header>
 
-    {% if index %}
+    {% if priority %}
         <section class="data-panel glass" aria-labelledby="score-title">
             <header class="data-heading">
-                <div><h3 id="score-title">Что повлияло на балл</h3>
-                    <p>{% if index.basis == 'orbit' %}Учтена доля оборота в зоне обитаемости.
-                    {% elif index.basis == 'axis' %}Тепловая оценка основана на большой полуоси.
-                    {% else %}Расстояние до звезды оценено по потоку и светимости.{% endif %}</p></div>
-                {{ source('#habitability-method', 'Методика расчёта индекса') }}
+                <h3 id="score-title">Что повлияло на балл</h3>
+                {{ source('#habitability-method', 'Методика расчёта приоритета') }}
             </header>
             <div class="score-bars">
                 {% for label, points, max_points in [
-                    ("Тепловые условия", index.zone, 70), ("Признаки твёрдой поверхности", index.surface, 30)
+                    ("Близость полуоси к зоне", priority.proximity_points, 30),
+                    ("Доля времени в зоне", priority.fraction_points, 40),
+                    ("Радиус" if m.radius.kind == "published" else "Радиус · оценка", priority.radius_points, 30)
                 ] %}
                     <div class="score-bar">
-                        <div><span>{{ label }}</span><strong>{{ points|number(1) }} / {{ max_points }}</strong></div>
-                        <meter min="0" max="{{ max_points }}" value="{{ points }}" aria-label="{{ label }}"></meter>
+                        <div><span>{{ label }}</span><strong>{{ 'Нет данных' if points is none else (points|number(1)) ~ ' / ' ~ max_points }}</strong></div>
+                        {% if points is not none %}
+                            <meter min="0" max="{{ max_points }}" value="{{ points }}" aria-label="{{ label }}"></meter>
+                        {% endif %}
                     </div>
                 {% endfor %}
             </div>
-            <p class="data-note">{% if index.density is not none %}Плотность по массе и радиусу — {{ index.density|number(2) }} г/см³.
-                {% else %}Плотность неизвестна. Вклад размера учитывается с понижением.{% endif %}
-                {% if planet.similarity %} ESI для сравнения с Землёй — {{ planet.similarity.score|number(3) }}.{% endif %}</p>
         </section>
     {% endif %}
 
@@ -83,20 +91,21 @@
         <header class="data-heading">
             <div>
                 <h3 id="orbit-title">Орбита и зона обитаемости</h3>
-                <p>{% if zone.inner is defined %}Диапазон, в котором при подходящей атмосфере на поверхности возможна жидкая вода.
+                <p>{% if zone.available %}Диапазон, в котором при подходящей атмосфере на поверхности возможна жидкая вода.
                     {% else %}{{ zone.reason }}{% endif %}</p>
             </div>
             {{ source(hz_model, 'Научная статья о модели ExoColumn') }}
         </header>
-        {% if zone.inner is defined %}
+        {% if zone.available %}
             <div class="orbit-result">
                 {% if orbit.fraction is not none %}
                     {% set percent = orbit.fraction * 100 %}
                     <strong>{% if 0 < percent < 0.1 %}&lt; 0,1{% elif 99.9 < percent < 100 %}&gt; 99,9{% else %}{{ percent|number(1) }}{% endif %}% оборота в зоне</strong>
-                    <span>Расчёт по модели</span>
+                    <span>{{ {"inside": "Вся орбита в зоне", "crossing": "Орбита пересекает зону", "outside": "Орбита вне зоны"}[orbit.status] }}</span>
                 {% else %}
                     <strong>Доля оборота неизвестна</strong>
-                    <span>Для расчёта нужны размер и форма орбиты.</span>
+                    <span>{{ "Известна полуось, для расчёта нужен эксцентриситет." if orbit.status == "axis_only"
+                        else "Для расчёта нужны полуось и эксцентриситет." }}</span>
                 {% endif %}
             </div>
         {% endif %}
@@ -129,14 +138,13 @@
             </figure>
         {% endif %}
         <dl class="orbit-facts">
-            {% if zone.inner is defined %}
-                <div><dt>Границы зоны</dt><dd>{{ zone.inner|number(4) }} – {{ zone.outer|number(4) }} а.е.</dd></div>
+            {% if zone.available %}
+                <div><dt>Влажный — максимальный парниковый эффект</dt><dd>{{ zone.inner|number(4) }} – {{ zone.outer|number(4) }} а.е.</dd></div>
+                <div><dt>Порог неуправляемого парникового эффекта</dt><dd>{{ zone.runaway|number(4) }} а.е.</dd></div>
             {% endif %}
             {% if orbit.near is not none %}
                 <div><dt>Ближайшая точка</dt><dd>{{ orbit.near|number(4) }} а.е.</dd></div>
                 <div><dt>Дальняя точка</dt><dd>{{ orbit.far|number(4) }} а.е.</dd></div>
-            {% elif orbit.axis is not none %}
-                <div><dt>Большая полуось</dt><dd>{{ amount(m.axis, "а.е.", 4) }}</dd></div>
             {% endif %}
         </dl>
     </section>
@@ -147,13 +155,48 @@
             {{ source(archive_url, 'Параметры и публикации в архиве NASA') }}
         </header>
         <dl class="system-facts">
-            {{ stat("Радиус", m.radius, "радиуса Земли") }}
-            {{ stat("Масса", m.mass, "массы Земли") }}
+            {{ stat("Радиус", m.radius, "радиуса Земли", 3) }}
+            {{ stat("Масса", m.mass, "массы Земли", 3) }}
+            {{ stat("Большая полуось", m.axis, "а.е.", 4) }}
             {{ stat("Звёздный поток", m.flux, "от земного") }}
             {{ stat("Период обращения", m.period, "суток") }}
-            {{ stat("Равновесная температура", m.temperature, "К", 0) }}
+            {{ stat("Равновесная температура", m.equilibrium_temperature, "К", 0) }}
             {{ stat("Эксцентриситет орбиты", m.eccentricity, "", 4) }}
         </dl>
+    </section>
+
+    <section class="data-panel glass" aria-labelledby="esi-title">
+        <header class="data-heading">
+            <h3 id="esi-title">Сходство с Землёй (ESI)</h3>
+            {{ source(esi_model, 'Классический индекс сходства с Землёй') }}
+        </header>
+        <dl class="system-facts">
+            <div><dt>Полный ESI</dt><dd>{{ 'Недостаточно данных' if planet.esi.score is none else planet.esi.score|number(3) }}</dd></div>
+            {% if planet.esi.interior is not none %}
+                <div><dt>Внутренний ESI <small>(радиус и плотность)</small></dt><dd>{{ planet.esi.interior|number(3) }}</dd></div>
+            {% endif %}
+            {% for key, label, unit in [
+                ("density", "Средняя плотность", "г/см³"), ("escape_velocity", "Скорость убегания", "км/с")
+            ] %}
+                {% set field = planet.physical_properties.get(key) %}
+                {% if field %}
+                    <div><dt>{{ label }}</dt><dd>{{ field.value|number }} <span class="unit">{{ unit }}</span>
+                        {% if field.lower is defined %}<small>от {{ field.lower|number }} до {{ field.upper|number }}</small>{% endif %}
+                    </dd></div>
+                {% endif %}
+            {% endfor %}
+        </dl>
+        {% if planet.esi.missing %}<p class="data-note"><strong>Для ESI не хватает</strong> — {{ field_list(planet.esi.missing) }}</p>{% endif %}
+        {% if planet.physical_properties %}<p class="data-note">Плотность и скорость рассчитаны по опубликованным массе и радиусу.</p>{% endif %}
+    </section>
+
+    <section class="data-panel glass" aria-labelledby="coverage-title">
+        <header class="data-heading">
+            <h3 id="coverage-title">Полнота данных</h3>
+            <strong>{{ planet.coverage.available }} из {{ planet.coverage.total }}</strong>
+        </header>
+        {% if planet.coverage.missing %}<p class="data-note"><strong>Недоступны</strong> — {{ field_list(planet.coverage.missing) }}</p>{% endif %}
+        <p class="data-note">Учитываются значения из публикаций и доступные оценки. Для массы нужна полная масса из публикации, для эксцентриситета — значение, определённое по наблюдениям.</p>
     </section>
 
     <section class="data-panel glass" aria-labelledby="system-title">
@@ -199,10 +242,10 @@
     <script type="application/json" id="planet-graphics">
         {{ {
             "name": planet.name,
-            "radius": m.radius.value if m.radius and not m.radius.limit else none,
-            "flux": m.flux.value if m.flux and not m.flux.limit else none,
-            "mass": m.mass.value if m.mass and m.mass.kind == 'published' and not m.mass.limit else none,
-            "temperature": m.temperature.value if m.temperature and not m.temperature.limit else none,
+            "radius": m.radius.value if m.radius and not m.radius.limit and m.radius.value > 0 else none,
+            "flux": m.flux.value if m.flux and not m.flux.limit and m.flux.value > 0 else none,
+            "mass": m.mass.value if m.mass and m.mass.kind == 'published' and not m.mass.limit and m.mass.value > 0 else none,
+            "temperature": m.equilibrium_temperature.value if m.equilibrium_temperature and not m.equilibrium_temperature.limit and m.equilibrium_temperature.value > 0 else none,
             "atmosphere": atmosphere[2] if atmosphere else none,
             "giant": planet.giant
         }|tojson }}
