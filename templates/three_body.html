@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+
+{% block head %}
+    <link rel="stylesheet" href="{{ request.url_for('static', path='/three-body.css').path }}">
+    {% if is_3d %}
+        <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+            }
+        }
+        </script>
+    {% endif %}
+    <script type="module" src="{{ request.url_for('static', path='/three-body02.js' if is_3d else '/three-body.js').path }}"></script>
+{% endblock %}
+
+{% block content %}
+{% set lab_path = request.url_for('section', slug=active_slug).path %}
+<section aria-labelledby="three-body-title">
+    <header class="page-heading tb-heading">
+        <div>
+            <p class="panel-label">Интерактивная лаборатория</p>
+            <h1 id="three-body-title">{{ sections[active_slug].title }}</h1>
+            <p class="page-heading__description">{{ sections[active_slug].description }}</p>
+        </div>
+        <nav class="tb-modes glass" aria-label="Режим симуляции">
+            <a href="{{ lab_path }}"{% if not is_3d %} aria-current="page"{% endif %}>2D</a>
+            <a href="{{ lab_path }}?mode=3d"{% if is_3d %} aria-current="page"{% endif %}>3D</a>
+        </nav>
+    </header>
+
+    <div class="tb-layout">
+        <div class="tb-main">
+            <div class="tb-stage glass">
+                {% if is_3d %}
+                    <div id="tb-canvas"></div>
+                {% else %}
+                    <canvas id="tb-canvas" aria-label="Координатная плоскость симуляции трёх тел"></canvas>
+                {% endif %}
+                <div class="tb-legend glass"><span>● Тело 1</span><span>● Тело 2</span><span>● Тело 3</span></div>
+            </div>
+
+            <p class="tb-note">
+                Выберите тело нажатием. Перетащите его для изменения координат, а конец стрелки — для изменения скорости.
+                {% if is_3d %}Перетащите свободную область сцены, чтобы повернуть камеру.{% endif %}
+            </p>
+
+            <div class="tb-actions glass">
+                <button class="button button--primary" id="tb-start" type="button">Запустить</button>
+                <button class="button" id="tb-reset" type="button">Сбросить</button>
+                <span class="tb-time">Время: <strong id="tb-time">0,00 суток</strong></span>
+                <label>Скорость <input id="tb-speed" type="range" min="4" max="64" step="4" value="32"><output id="tb-speed-out" for="tb-speed">32×</output></label>
+            </div>
+
+            <div id="tb-events" class="tb-events glass" aria-live="polite"><strong>События:</strong> пока не обнаружены</div>
+        </div>
+
+        <div class="tb-sidebar">
+            <p id="tb-status" class="tb-status glass" role="status">Модель остановлена</p>
+            <aside class="tb-editor glass" aria-label="Панель параметров">
+                <div>
+                    <p class="panel-label">Панель параметров</p>
+                    <h2 id="tb-editor-title">Выбери тело</h2>
+                    <p id="tb-help" class="tb-note">Нажмите на одно из трёх тел в симуляции.</p>
+                </div>
+
+                <div id="tb-fields" class="tb-fields" hidden>
+                    <h3>Масса</h3>
+                    <label class="tb-field">Масса, масс Солнца <output id="tb-mass-out">1,00000</output><input id="tb-mass-range" type="range" min=".0001" max="10" step=".0001"><input id="tb-mass" type="number" min=".0001" max="1000" step=".00001"></label>
+
+                    <h3>Начальные координаты</h3>
+                    <div class="tb-row">
+                        <label class="tb-field">X, а.е.<input id="tb-x" type="number" step=".01"></label>
+                        <label class="tb-field">Y, а.е.<input id="tb-y" type="number" step=".01"></label>
+                        {% if is_3d %}<label class="tb-field">Z, а.е.<input id="tb-z" type="number" step=".01"></label>{% endif %}
+                    </div>
+
+                    <h3>Вектор скорости</h3>
+                    <label class="tb-field">Скорость{% if is_3d %} в XY{% endif %}, км/с <output id="tb-vel-out">0</output><input id="tb-vel-range" type="range" min="0" max="100" step=".1"><input id="tb-vel" type="number" min="0" max="10000" step=".01"></label>
+                    <label class="tb-field">Угол от оси X, °<input id="tb-angle" type="number" min="-360" max="360" step="1"></label>
+                    {% if is_3d %}<label class="tb-field">Компонента Vz, км/с<input id="tb-vz" type="number" min="-10000" max="10000" step=".01"></label>{% endif %}
+                    <p class="tb-note">Угол отсчитывается против часовой стрелки от положительного направления X{% if is_3d %} в плоскости XY{% endif %}. Изменения вступят в силу после применения.</p>
+
+                    <div class="tb-row">
+                        <button class="button button--primary" id="tb-apply" type="button">Применить к телу</button>
+                        <button class="button" id="tb-cancel" type="button">Отмена</button>
+                    </div>
+                    <button class="button" id="tb-reset-selected" type="button">Сбросить настройки тела</button>
+                    <div class="tb-row">
+                        <button class="button" id="tb-mass-all" type="button">Массу ко всем</button>
+                        <button class="button" id="tb-velocity-all" type="button">Скорость ко всем</button>
+                    </div>
+                </div>
+
+                <div class="tb-presets">
+                    <label for="tb-preset">Начальная конфигурация</label>
+                    <select id="tb-preset">
+                        <option value="custom" disabled>Пользовательская</option>
+                        <option value="figure8">Периодическая «восьмёрка»</option>
+                        <option value="triangle">Треугольник Лагранжа</option>
+                        <option value="chaos">Неустойчивая конфигурация</option>
+                    </select>
+                    <p class="tb-note">Смена сценария сбрасывает параметры всех тел.{% if is_3d %} «Восьмёрка» и треугольник Лагранжа начинаются в плоскости XY. В неустойчивой конфигурации тела изначально расположены в пространстве.{% endif %}</p>
+                </div>
+            </aside>
+        </div>
+    </div>
+    <p class="tb-note tb-caption">Учебная ньютоновская модель. При очень близком сближении тел погрешность расчёта может возрастать.</p>
+</section>
+{% endblock %}

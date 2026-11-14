@@ -1,0 +1,487 @@
+(()=>{
+const c=document.getElementById("tb-canvas");if(!c)return;
+const $=id=>document.getElementById(id),g=c.getContext("2d");
+const AU_KM = 149597870.7;
+const DAY_S = 86400;
+const G = 2.959122082855911e-4;
+const KM_S_TO_AU_DAY = DAY_S / AU_KM;
+const SQRT_G = Math.sqrt(G);
+const DT = 0.01;
+const COLLISION_DISTANCE = 0.01;
+const EJECTION_DISTANCE = 10;
+const C = ["#8ddcff","#ffc58e","#c7a5ff"];
+const P={
+// Figure-eight: outer bodies are symmetric about the COM; central velocity is -2 times either outer velocity.
+figure8:[[-.97000436,.24308753,.466203685,.43236573,1],[.97000436,-.24308753,.466203685,.43236573,1],[0,0,-.93240737,-.86473146,1]],
+triangle:[[0,0,0,0,1],[1.2,0,0,0,1],[.6,1.0392304845,0,0,1]],
+chaos:[[-1.05,.25,.12,.55,1],[.82,.52,-.28,-.12,1],[.12,-.82,.34,-.18,1]]};
+let B=[],INITIAL=[],DRAFT={},DIRTY={},T=[[],[],[]],
+    EVENTS=[],EVENT_KEYS=new Set(),
+    sel=-1,run=false,time=0,speed=32,acc=0,last=0,
+    drag=-1,vectorDrag=false,dragPending=false,
+    dragStart=null,dragTimer=null,
+    V={x:0,y:0,s:100},activePreset="figure8";
+const STABILITY_CHECK_DAYS = 500;
+const EJECTION_CONFIRM_DAYS = 20;
+
+let ejectionSince = {};
+let maxSeparation = 0;
+let stabilityReported = false;
+function markCustom(){
+    $("tb-preset").value="custom";
+}
+const clamp=(x,a,b)=>Math.max(a,Math.min(b,x)),fmt=(x,n=3)=>Number(x).toFixed(n).replace(".",",");
+function setStatus(message, alert = false) {const status = $("tb-status");status.textContent = message;status.classList.toggle("is-alert", alert);}
+function hasPendingChanges() {
+    return Object.keys(DIRTY).length > 0;
+}
+
+function updateStartControl() {
+    const eventStop = EVENTS.some(
+        e => e.type === "collision" || e.type === "ejection"
+    );
+
+    $("tb-start").disabled = hasPendingChanges() || eventStop;
+}
+
+function markPendingChange() {if (sel < 0) return;DIRTY[sel] = true;if (run) {run = false;acc = 0;$("tb-start").textContent = "Продолжить";}updateStartControl();setStatus("Есть несохранённые изменения. Примени их или нажми «Отмена».");}
+function setV(b,v,a){ let q=a*Math.PI/180; let w=v*KM_S_TO_AU_DAY; b.vx=w*Math.cos(q); b.vy=w*Math.sin(q); };
+const vel=b=>Math.hypot(b.vx,b.vy)/KM_S_TO_AU_DAY;
+function randomChaos(){
+    const bodies=[];
+    const minDistance=0.65;
+
+    // Случайно размещаем три тела,
+    // не допуская слишком тесного начального сближения.
+    for(let i=0;i<3;i++){
+        let body, attempts=0;
+
+        do{
+            body={
+                x:(Math.random()*2-1)*1.2,
+                y:(Math.random()*2-1)*1.2
+            };
+            attempts++;
+        }while(
+            bodies.some(b=>
+                Math.hypot(body.x-b.x,body.y-b.y)<minDistance
+            ) && attempts<100
+        );
+
+        bodies.push(body);
+    }
+
+    // Случайные начальные скорости.
+    return bodies.map(b=>[
+        b.x,
+        b.y,
+        (Math.random()*0.4-0.2),
+        (Math.random()*0.4-0.2),
+        1
+    ]);
+}
+function preset(name){
+    activePreset=name;
+
+    const source=name==="chaos"?randomChaos():P[name];
+
+    B=source.map(a=>({
+        x:a[0],
+        y:a[1],
+        vx:a[2]*SQRT_G,
+        vy:a[3]*SQRT_G,
+        m:a[4]
+    }));
+    if(name==="triangle"){
+        const side=1.2, m=B.reduce((s,b)=>s+b.m,0), cx=B.reduce((s,b)=>s+b.m*b.x,0)/m, cy=B.reduce((s,b)=>s+b.m*b.y,0)/m;
+        const w=Math.sqrt(G*m/(side**3));
+        B.forEach(b=>{const x=b.x-cx,y=b.y-cy;b.x=x;b.y=y;b.vx=-w*y;b.vy=w*x});
+    }
+    const totalMass=B.reduce((s,b)=>s+b.m,0);
+
+    const cx=B.reduce((s,b)=>s+b.m*b.x,0)/totalMass;
+    const cy=B.reduce((s,b)=>s+b.m*b.y,0)/totalMass;
+
+    const cvx=B.reduce((s,b)=>s+b.m*b.vx,0)/totalMass;
+    const cvy=B.reduce((s,b)=>s+b.m*b.vy,0)/totalMass;
+
+    B.forEach(b=>{
+        b.x-=cx;
+        b.y-=cy;
+        b.vx-=cvx;
+        b.vy-=cvy;
+    });
+    INITIAL=B.map(b=>({...b}));DRAFT={};DIRTY={};sel=-1;editor();resetAll();
+}
+function accels(s){return s.map((b,i)=>{let ax=0,ay=0;s.forEach((o,j)=>{if(i===j)return;let x=o.x-b.x,y=o.y-b.y,r2=x*x+y*y;if(r2<1e-12)return;let z=G*o.m/(r2*Math.sqrt(r2));ax+=x*z;ay+=y*z});return{ax,ay}})}
+function deriv(s){let a=accels(s);return s.map((b,i)=>({x:b.vx,y:b.vy,vx:a[i].ax,vy:a[i].ay}))}
+function shift(s,k,f){return s.map((b,i)=>({...b,x:b.x+k[i].x*f,y:b.y+k[i].y*f,vx:b.vx+k[i].vx*f,vy:b.vy+k[i].vy*f}))}
+
+function addEvent(type, bodies, message) {
+    const key = type + ":" + bodies.slice().sort((a,b)=>a-b).join("-");
+    if (EVENT_KEYS.has(key)) return;
+
+    EVENT_KEYS.add(key);
+    EVENTS.push({ type, bodies, message, time });
+    renderEvents();
+}
+
+function detectEvents() {
+    let collision = false;
+    let ejection = false;
+
+    for (let i = 0; i < B.length; i++) {
+        for (let j = i + 1; j < B.length; j++) {
+            const distance = Math.hypot(
+                B[i].x - B[j].x,
+                B[i].y - B[j].y
+            );
+
+            if (distance <= COLLISION_DISTANCE) {
+                addEvent(
+                    "collision",
+                    [i, j],
+                    "Столкновение тел " + (i + 1) + " и " + (j + 1)
+                );
+                collision = true;
+            }
+        }
+    }
+
+    for (let i = 0; i < B.length; i++) {
+        if (EVENT_KEYS.has("ejection:" + i)) continue;
+
+        const pair = B.filter((_, j) => j !== i);
+        const a = pair[0], b = pair[1], body = B[i];
+        const mass = a.m + b.m;
+
+        const cx = (a.m*a.x + b.m*b.x) / mass;
+        const cy = (a.m*a.y + b.m*b.y) / mass;
+        const cvx = (a.m*a.vx + b.m*b.vx) / mass;
+        const cvy = (a.m*a.vy + b.m*b.vy) / mass;
+
+        const rx = body.x - cx;
+        const ry = body.y - cy;
+        const rvx = body.vx - cvx;
+        const rvy = body.vy - cvy;
+
+        const distance = Math.hypot(rx, ry);
+        const radial = rx*rvx + ry*rvy;
+
+        const energy = 0.5*(rvx*rvx + rvy*rvy)
+            - G*mass/Math.max(distance, 1e-12);
+
+        const candidate =
+            distance >= EJECTION_DISTANCE &&
+            radial > 0 &&
+            energy > 0;
+
+        if (candidate) {
+            if (ejectionSince[i] === undefined) {
+                ejectionSince[i] = time;
+            }
+
+            if (time - ejectionSince[i] >= EJECTION_CONFIRM_DAYS) {
+                addEvent(
+                    "ejection",
+                    [i],
+                    "Выброс тела " + (i + 1)
+                );
+                ejection = true;
+            }
+        } else {
+            delete ejectionSince[i];
+        }
+    }
+
+    const distances = [];
+
+    for (let i = 0; i < B.length; i++) {
+        for (let j = i + 1; j < B.length; j++) {
+            distances.push(Math.hypot(
+                B[i].x - B[j].x,
+                B[i].y - B[j].y
+            ));
+        }
+    }
+
+    maxSeparation = Math.max(maxSeparation, ...distances);
+
+    if (
+        time >= STABILITY_CHECK_DAYS &&
+        !stabilityReported &&
+        EVENTS.length === 0 &&
+        maxSeparation < EJECTION_DISTANCE
+    ) {
+        stabilityReported = true;
+
+        addEvent(
+            "stable",
+            [],
+            "Предварительно устойчивое движение за 500 суток"
+        );
+    }
+
+    if (collision || ejection) {
+        run = false;
+        acc = 0;
+
+        $("tb-start").disabled = true;
+        $("tb-start").textContent = "Столкновение";
+        setStatus(
+            collision
+                ? "Модель остановлена: обнаружено столкновение"
+                : "Модель остановлена: обнаружен выброс тела",
+            true
+        );
+    }
+}
+
+function renderEvents() {
+    const panel = $("tb-events");
+    if (!panel) return;
+
+    if (!EVENTS.length) {
+        panel.innerHTML =
+            "<strong>События:</strong> пока не обнаружены";
+        return;
+    }
+
+    panel.innerHTML =
+        "<strong>Обнаруженные события:</strong><ul>" +
+        EVENTS.map(e =>
+            "<li>" + e.message + " — "
+            + fmt(e.time, 2) + " суток</li>"
+        ).join("") +
+        "</ul>";
+}
+
+function clearEvents() {
+    EVENTS = [];
+    EVENT_KEYS.clear();
+    ejectionSince = {};
+    maxSeparation = 0;
+    stabilityReported = false;
+    renderEvents();
+}
+
+function step() {
+    let a = deriv(B);
+    let b = deriv(shift(B, a, DT/2));
+    let d = deriv(shift(B, b, DT/2));
+    let e = deriv(shift(B, d, DT));
+
+    B = B.map((p, i) => ({
+        ...p,
+        x: p.x + DT/6*(a[i].x + 2*b[i].x + 2*d[i].x + e[i].x),
+        y: p.y + DT/6*(a[i].y + 2*b[i].y + 2*d[i].y + e[i].y),
+        vx: p.vx + DT/6*(a[i].vx + 2*b[i].vx + 2*d[i].vx + e[i].vx),
+        vy: p.vy + DT/6*(a[i].vy + 2*b[i].vy + 2*d[i].vy + e[i].vy)
+    }));
+
+    time += DT;
+
+    B.forEach((b, i) => {
+        T[i].push({x:b.x, y:b.y});
+        if (T[i].length > 2000) T[i].shift();
+    });
+
+    detectEvents();
+}
+function energy(){let e=0;B.forEach(b=>e+=.5*b.m*(b.vx*b.vx+b.vy*b.vy));for(let i=0;i<3;i++)for(let j=i+1;j<3;j++){let x=B[j].x-B[i].x,y=B[j].y-B[i].y;e-=G*B[i].m*B[j].m/Math.max(Math.sqrt(x*x+y*y),1e-9)}return e}
+function resize(){let r=c.getBoundingClientRect(),d=Math.min(devicePixelRatio||1,2);c.width=r.width*d;c.height=r.height*d;g.setTransform(d,0,0,d,0,0);V.x=r.width/2;V.y=r.height/2;V.s=Math.min(r.width,r.height)/4.67}
+const scr=p=>({x:V.x+p.x*V.s,y:V.y-p.y*V.s}),world=p=>({x:(p.x-V.x)/V.s,y:-(p.y-V.y)/V.s});
+function arrow(ctx,x,y,dx,dy,col){let a=Math.atan2(dy,dx),L=12;ctx.strokeStyle=col;ctx.fillStyle=col;ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x+dx,y+dy);ctx.stroke();ctx.beginPath();ctx.moveTo(x+dx,y+dy);ctx.lineTo(x+dx-L*Math.cos(a-.45),y+dy-L*Math.sin(a-.45));ctx.lineTo(x+dx-L*Math.cos(a+.45),y+dy-L*Math.sin(a+.45));ctx.fill()}
+function grid(w,h){g.save();let st=V.s>190?.25:V.s>80?.5:1,l=-V.x/V.s,r=(w-V.x)/V.s,b=-(h-V.y)/V.s,t=V.y/V.s;g.strokeStyle="#9eb7d522";g.fillStyle="#9eb7d5";g.font="10px sans-serif";for(let x=Math.ceil(l/st)*st;x<=r;x+=st){let px=V.x+x*V.s;g.beginPath();g.moveTo(px,0);g.lineTo(px,h);g.stroke();if(x)g.fillText(String(+x.toFixed(2)),px+3,V.y+12)}for(let y=Math.ceil(b/st)*st;y<=t;y+=st){let py=V.y-y*V.s;g.beginPath();g.moveTo(0,py);g.lineTo(w,py);g.stroke();if(y)g.fillText(String(+y.toFixed(2)),V.x+5,py-3)}g.strokeStyle="#c4d5eb88";g.lineWidth=1.4;g.beginPath();g.moveTo(0,V.y);g.lineTo(w,V.y);g.moveTo(V.x,0);g.lineTo(V.x,h);g.stroke();g.fillStyle="#d3dfef";g.fillText("X, а.е.",w-48,V.y-7);g.fillText("Y, а.е.",V.x+7,13);g.restore()}
+function draw(){let w=c.clientWidth,h=c.clientHeight;g.clearRect(0,0,w,h);grid(w,h);T.forEach((a,i)=>{if(a.length<2)return;g.beginPath();a.forEach((p,j)=>{let q=scr(p);j?g.lineTo(q.x,q.y):g.moveTo(q.x,q.y)});g.strokeStyle=C[i]+"99";g.lineWidth=1.5;g.stroke()});B.forEach((b,i)=>{let p=scr(b),rad=10+Math.min(7,Math.sqrt(b.m)*2);let glow=g.createRadialGradient(p.x,p.y,1,p.x,p.y,rad*3);glow.addColorStop(0,C[i]+"99");glow.addColorStop(1,C[i]+"00");g.fillStyle=glow;g.beginPath();g.arc(p.x,p.y,rad*3,0,7);g.fill();g.fillStyle=C[i];g.beginPath();g.arc(p.x,p.y,rad,0,7);g.fill();g.strokeStyle=sel===i?"white":"#ffffff99";g.lineWidth=sel===i?2.5:1;g.stroke();g.fillStyle="#e4edfa";g.font="11px sans-serif";g.fillText("Тело "+(i+1),p.x+11,p.y-11);let d=(!run&&sel===i&&DIRTY[i]&&DRAFT[i])?DRAFT[i]:b;let a=Math.atan2(d.vy,d.vx),len=clamp(vel(d)*2.0,16,90);arrow(g,p.x,p.y,Math.cos(a)*len,-Math.sin(a)*len,C[i])});$("tb-time").textContent=fmt(time,2)+" суток";}
+function reset(){
+    run=false;
+    time=0;
+    acc=0;
+    T=B.map(b=>[{x:b.x,y:b.y}]);
+    clearEvents();
+
+    $("tb-start").disabled = false;
+    updateStartControl();
+    setStatus("Модель остановлена");
+    draw();
+}
+function resetAll(){
+    B=INITIAL.map(b=>({...b}));
+    DRAFT={};
+    DIRTY={};
+    $("tb-preset").value=activePreset;
+    reset();
+    editor();
+}
+function resetSelected(){if(sel<0)return;B[sel]={...INITIAL[sel]};delete DRAFT[sel];delete DIRTY[sel];reset();editor()}
+function draftFor(i){if(!DRAFT[i])DRAFT[i]={vx:B[i].vx,vy:B[i].vy};return DRAFT[i]}
+function editor(){let f=$("tb-fields"),h=$("tb-help");if(sel<0){f.hidden=true;h.hidden=false;$("tb-editor-title").textContent="Выбери тело";return}let b=B[sel],d=draftFor(sel);f.hidden=false;h.hidden=true;$("tb-editor-title").textContent="Тело "+(sel+1);$("tb-mass").value=b.m;$("tb-mass-range").value=clamp(b.m,.0001,10);$("tb-mass-out").textContent=fmt(b.m,5);$("tb-x").value=b.x.toFixed(5);$("tb-y").value=b.y.toFixed(5);$("tb-vel").value=(Math.hypot(d.vx,d.vy)/KM_S_TO_AU_DAY).toFixed(3);$("tb-vel-range").value=clamp(Math.hypot(d.vx,d.vy)/KM_S_TO_AU_DAY,0,100);$("tb-vel-out").textContent=fmt(Math.hypot(d.vx,d.vy)/KM_S_TO_AU_DAY);$("tb-angle").value=(Math.atan2(d.vy,d.vx)*180/Math.PI).toFixed(2)}
+function clearSelection(){
+    if(sel<0)return;
+
+    const old=sel;
+    const hadChanges=!!DIRTY[old];
+
+    delete DRAFT[old];
+    delete DIRTY[old];
+    updateStartControl();
+
+    sel=-1;
+    drag=-1;
+    vectorDrag=false;
+
+    editor();
+    draw();
+
+    if(hadChanges){
+        $("tb-status").textContent="Неподтверждённые изменения отменены";
+    }
+}
+function read(){return{m:+$("tb-mass").value,x:+$("tb-x").value,y:+$("tb-y").value,v:+$("tb-vel").value,a:+$("tb-angle").value}}
+function commitSelectedChanges(p) {if (sel < 0) return;const d = draftFor(sel);B[sel].m = p.m;B[sel].x = p.x;B[sel].y = p.y;B[sel].vx = d.vx;B[sel].vy = d.vy;delete DRAFT[sel];delete DIRTY[sel];}
+function applyMass(all) {const p = read();if (!Number.isFinite(p.m) || p.m <= 0 || p.m > 1000) {alert("Масса должна быть больше нуля и не превышать 1000 масс Солнца.");return;}if (sel >= 0) {commitSelectedChanges(p);}markCustom();if (all) {B.forEach(b => b.m = p.m);}setStatus(all? "Масса применена ко всем телам": "Масса применена к телу");reset();editor();}
+function applyVelocity(all) {const p = read();if (!Number.isFinite(p.v) || p.v < 0 || p.v > 10000) {alert("Скорость должна быть от 0 до 10000 км/с.");return;}if (sel >= 0) {commitSelectedChanges(p);}markCustom();if (all) {B.forEach(b => {const angle = Math.atan2(b.vy, b.vx);const velocity = p.v * KM_S_TO_AU_DAY;b.vx = velocity * Math.cos(angle);b.vy = velocity * Math.sin(angle);});} else if (sel >= 0) {setV(B[sel], p.v, p.a);}setStatus(all? "Скорость применена ко всем телам": "Скорость применена к телу");reset();editor();}
+function updateDraftFromInputs(){if(sel<0)return;let v=+$("tb-vel").value,a=+$("tb-angle").value;if(!Number.isFinite(v)||!Number.isFinite(a))return;setV(draftFor(sel),v,a);markPendingChange();markCustom();$("tb-vel-out").textContent=fmt(v);$("tb-vel-range").value=clamp(v,0,100);draw()}
+c.addEventListener("pointerdown",e=>{let r=c.getBoundingClientRect(),p={x:e.clientX-r.left,y:e.clientY-r.top};
+    if(sel>=0){
+        let b=B[sel],d=draftFor(sel),q=scr(b),
+            a=Math.atan2(d.vy,d.vx),
+            len=clamp(vel(d)*2.0,16,90),
+            tip={x:q.x+Math.cos(a)*len,y:q.y-Math.sin(a)*len};
+
+        if(Math.hypot(tip.x-p.x,tip.y-p.y)<24){
+            vectorDrag=true;
+            c.setPointerCapture(e.pointerId);
+            return;
+        }
+    }
+    let i=B.findIndex(b=>{let q=scr(b);return Math.hypot(q.x-p.x,q.y-p.y)<19});
+    if(i>=0){
+        if(i!==sel && sel>=0){
+            const hadChanges=!!DIRTY[sel];
+            delete DRAFT[sel];
+            delete DIRTY[sel];
+            updateStartControl();
+            if(hadChanges){
+            $("tb-status").textContent="Неподтверждённые изменения отменены";
+            }
+        }
+        sel=i;
+        editor();
+
+        dragPending=true;
+        dragStart=p;
+        drag=-1;
+
+        c.setPointerCapture(e.pointerId);
+
+        dragTimer=setTimeout(()=>{
+            if(dragPending){
+                drag=i;
+                dragPending=false;
+            }
+        },65);
+
+        draw();
+    }
+    else if(sel>=0){
+    clearSelection();
+    }
+});
+c.addEventListener("pointermove",e=>{
+  let r=c.getBoundingClientRect(),
+      p={x:e.clientX-r.left,y:e.clientY-r.top};
+
+  if(vectorDrag&&sel>=0&&!run){
+    let b=scr(B[sel]),
+        dx=p.x-b.x,
+        dy=b.y-p.y,
+        d=draftFor(sel),
+        v=Math.hypot(d.vx,d.vy)/KM_S_TO_AU_DAY,
+        a=Math.atan2(dy,dx)*180/Math.PI;
+
+    setV(d,v,a);
+    markPendingChange();
+    markCustom();
+    editor();
+    draw();
+    return;
+  }
+
+  if(dragPending){
+    if(Math.hypot(p.x-dragStart.x,p.y-dragStart.y)>5){
+        clearTimeout(dragTimer);
+        dragTimer=null;
+        dragPending=false;
+    }
+    return;
+    }
+    let q=world(p);
+    B[drag].x=q.x;
+    B[drag].y=q.y;
+    T[drag]=[{...q}];
+    markCustom();
+    editor();
+    draw();
+});
+function end(){
+    if(dragTimer){
+        clearTimeout(dragTimer);
+        dragTimer=null;
+    }
+    dragPending=false;
+    drag=-1;
+    vectorDrag=false;
+}
+c.addEventListener("pointerup",end);c.addEventListener("pointercancel",end);
+$("tb-mass").oninput = () => {$("tb-mass-range").value = clamp(+$("tb-mass").value || .0001, .0001, 10);$("tb-mass-out").textContent = fmt(+$("tb-mass").value || 0, 5);markPendingChange();};
+$("tb-mass-range").oninput = e => {$("tb-mass").value = e.target.value;$("tb-mass-out").textContent = fmt(+e.target.value, 5);markPendingChange();};
+$("tb-x").oninput = markPendingChange;
+$("tb-y").oninput = markPendingChange;
+$("tb-vel").oninput=updateDraftFromInputs;
+$("tb-vel-range").oninput=e=>{$("tb-vel").value=e.target.value;updateDraftFromInputs()};
+$("tb-angle").oninput=updateDraftFromInputs;
+$("tb-apply").onclick = () => {if (sel < 0) return;const p = read();if (![p.m, p.x, p.y].every(Number.isFinite) ||p.m <= 0 || p.m > 1000 ||Math.abs(p.x) > 10000 ||Math.abs(p.y) > 10000) {alert("Проверь массу и координаты.");return;}commitSelectedChanges(p);markCustom();setStatus("Параметры тела применены");reset();editor();};
+$("tb-cancel").onclick = () => {if (sel < 0) return;delete DRAFT[sel];delete DIRTY[sel];editor();updateStartControl();setStatus("Несохранённые изменения отменены");};
+$("tb-reset-selected").onclick=resetSelected;
+$("tb-mass-all").onclick=()=>applyMass(true);$("tb-velocity-all").onclick=()=>applyVelocity(true);
+$("tb-preset").onchange=e=>preset(e.target.value);
+$("tb-start").onclick = () => {if (hasPendingChanges()) {setStatus("Сначала примени параметры или нажми «Отмена».");return;}run = !run;$("tb-start").textContent = run? "Остановить": "Продолжить";setStatus(run ? "Симуляция выполняется" : "Симуляция остановлена");};
+$("tb-reset").onclick=resetAll;$("tb-speed").oninput=e=>{speed=+e.target.value;$("tb-speed-out").textContent=speed+"×"};
+function frame(n) {
+    if (!last) last = n;
+
+    let dt = Math.min((n - last) / 1000, 0.05);
+    last = n;
+
+    if (run) {
+        acc += dt * speed * 2;
+        let z = 0;
+
+        while (run && acc >= DT && z++ < 500) {
+            step();
+            acc -= DT;
+        }
+    }
+
+    draw();
+    requestAnimationFrame(frame);
+}
+window.addEventListener("keydown",e=>{
+    if(e.key!=="Escape")return;
+
+    // Остановка симуляции
+    run=false;
+    acc=0;
+
+    $("tb-start").disabled=false;
+    $("tb-start").textContent="Продолжить";
+
+    // Снятие выбора тела
+    clearSelection();
+
+    $("tb-status").textContent="Симуляция остановлена";
+});
+B=P.figure8.map(a=>({ x:a[0], y:a[1], vx:a[2]*SQRT_G, vy:a[3]*SQRT_G, m:a[4] })); INITIAL=B.map(b=>({...b}));resize();editor();reset();window.addEventListener("resize",()=>{resize();draw()});requestAnimationFrame(frame);
+})();

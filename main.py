@@ -26,7 +26,7 @@ SECTIONS = {
     },
     "three-body": {
         "title": "Задача трёх тел",
-        "description": "В этой лаборатории можно будет менять начальные условия и наблюдать, как три тела движутся под действием гравитации.",
+        "description": "Меняйте массы, координаты и начальные скорости и наблюдайте, как три тела движутся под действием гравитации.",
     },
     "constellations": {
         "title": "Созвездия",
@@ -187,6 +187,13 @@ async def refresh_catalog(request: Request) -> JSONResponse:
 async def section(request: Request, slug: str) -> HTMLResponse:
     if not slug or slug not in SECTIONS:
         raise HTTPException(status_code=404, detail="Страница не найдена")
+
+    if slug == "three-body":
+        return templates.TemplateResponse(
+            request=request,
+            name="three_body.html",
+            context={"active_slug": slug, "is_3d": request.query_params.get("mode") == "3d"},
+        )
 
     return templates.TemplateResponse(
         request=request,
