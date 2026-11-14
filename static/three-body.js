@@ -55,10 +55,10 @@ c.addEventListener("pointerdown",e=>{let r=c.getBoundingClientRect(),p={x:e.clie
     if(sel>=0){
         let b=B[sel],d=draftFor(sel),q=scr(b),
             a=Math.atan2(d.vy,d.vx),
-            len=clamp(vel(d)*1.0,16,90),
+            len=clamp(vel(d)*2.0,16,90),
             tip={x:q.x+Math.cos(a)*len,y:q.y-Math.sin(a)*len};
 
-        if(Math.hypot(tip.x-p.x,tip.y-p.y)<15){
+        if(Math.hypot(tip.x-p.x,tip.y-p.y)<24){
             vectorDrag=true;
             c.setPointerCapture(e.pointerId);
             return;
