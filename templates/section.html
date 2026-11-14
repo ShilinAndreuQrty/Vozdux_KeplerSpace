@@ -1,20 +1,16 @@
 {% extends "base.html" %}
-
-{% block head %}
-    <script type="module" src="{{ request.url_for('static', path='/sky.js').path }}"></script>
-{% endblock %}
+{% set section = sections[active_slug] %}
+{% block body_class %}{% if section.future %}preview-page preview-page--{{ active_slug }}{% endif %}{% endblock %}
 
 {% block content %}
-    {% set section = sections[active_slug] %}
-    <section class="section-panel" aria-labelledby="section-title">
-        <canvas class="section-panel__sky" data-sky aria-hidden="true"></canvas>
-        <div class="section-panel__content glass">
-            <p class="panel-label">{{ 'В будущем' if section.future else 'В разработке' }}</p>
-            <h1 id="section-title">{{ section.title }}</h1>
-            <p class="section-panel__description">{{ section.description }}</p>
-            <a class="button" href="{{ request.url_for('home').path }}">
-                <span aria-hidden="true">←</span> К Солнечной системе
-            </a>
-        </div>
-    </section>
+    {% if not section.future %}<section class="section-panel section-panel--three-body" aria-labelledby="section-title">{% endif %}
+    <div class="section-panel__content">
+        <p class="panel-label">{{ 'В будущем' if section.future else 'В разработке' }}</p>
+        <h1 id="section-title">{{ section.title }}</h1>
+        <p class="section-panel__description">{{ section.description }}</p>
+        <a class="button" href="{{ request.url_for('home').path }}">
+            <span aria-hidden="true">←</span> К Солнечной системе
+        </a>
+    </div>
+    {% if not section.future %}</section>{% endif %}
 {% endblock %}

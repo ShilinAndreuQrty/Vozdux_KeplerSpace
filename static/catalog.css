@@ -41,12 +41,11 @@
     min-height: clamp(310px, 25.2vw, 370px);
     overflow: hidden;
     padding: clamp(20px, 3vw, 43px);
-    border: 1px solid #c5d7fa50;
-    border-radius: clamp(20px, 2.6vw, 30px);
+    border: 1px solid var(--line);
+    border-radius: 10px;
     background:
         radial-gradient(ellipse at 73% 44%, var(--planet-ambient, #43628c55), transparent 66%),
-        linear-gradient(129deg, #1d1b30, #0c1427 62%, #111a2c);
-    box-shadow: inset 0 1px 0 #eef4ff2d, 0 15px 40px #0305105e;
+        #0c111b;
 }
 .planet-hero__sky { position: absolute; z-index: -3; inset: 0; width: 100%; height: 100%; }
 .planet-portrait {
@@ -98,10 +97,10 @@
     gap: clamp(12px, 1.7vw, 24px);
     margin-top: 23px;
     padding: 10px 14px;
-    border-radius: 18px;
-    background:
-        radial-gradient(ellipse at 21% 0%, #ceebff32, transparent 62%),
-        linear-gradient(125deg, #5d9db847, #273b624d), #10182b9c;
+    border: 0;
+    border-left: 1px solid #9de6f588;
+    border-radius: 0;
+    background: #11151ed9;
 }
 .score-chip__label { display: block; margin-bottom: 4px; color: #d8e3f3; font-size: .66rem; }
 .score-chip strong { color: #e8fcff; font-size: clamp(1.26rem, 2.75vw, 2.15rem); letter-spacing: -.06em; }
@@ -109,9 +108,7 @@
 .score-chip__rank {
     flex: none;
     padding: 6px 9px;
-    border: 1px solid #d4e4ff3c;
-    border-radius: 9px;
-    background: #e4f4ff13;
+    border-left: 1px solid var(--line);
     color: #d8f6fc;
     font-size: .73rem;
     font-weight: 650;
@@ -122,10 +119,7 @@
     display: grid;
     gap: 11px;
     padding: clamp(12px, 1.45vw, 20px);
-    border-radius: clamp(20px, 2.6vw, 30px);
-    background:
-        radial-gradient(ellipse at 90% -6%, #9dc9f229, transparent 48%),
-        var(--glass-fill);
+    border-radius: 10px;
 }
 .ranking__heading, .ranking__columns { display: flex; justify-content: space-between; gap: 10px; }
 .ranking__heading { align-items: center; padding: 2px 1px 3px; }
@@ -136,10 +130,9 @@
     align-items: center;
     gap: 9px;
     padding-inline: 13px;
-    border: 1px solid #acbee144;
-    border-radius: 12px;
-    background: #080e1e91;
-    box-shadow: inset 0 2px 8px #04071455, 0 1px 0 #dce8ff19;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #0b0f17;
 }
 .search-box:focus-within { outline: 1px solid var(--accent); }
 .search-box input {
@@ -183,7 +176,7 @@
 .ranking-list {
     display: grid;
     align-content: start;
-    gap: 4px;
+    gap: 0;
     max-height: min(57vh, 510px);
     min-height: 0;
     overflow-y: auto;
@@ -200,18 +193,12 @@
     gap: 8px;
     min-height: 47px;
     padding: 6px 9px;
-    border: 1px solid #c7d9ff12;
-    border-radius: 11px;
-    background: #101b2c83;
+    border-bottom: 1px solid var(--line);
     transition: background .16s, border-color .16s;
 }
-.rank-row:hover { border-color: #aeccee4d; background: #2436539a; }
+.rank-row:hover { background: #b9d4ff12; }
 .rank-row:focus-visible { outline-offset: -2px; }
-.rank-row[aria-current="true"] {
-    border-color: #a4dfef71;
-    background: linear-gradient(115deg, #5086ad47, #85b6d32a 60%, #83c5dc23);
-    box-shadow: inset 0 1px 0 #fff3, inset 0 -1px 0 #afdafa21;
-}
+.rank-row[aria-current="true"] { box-shadow: inset 2px 0 var(--accent); background: #6eacbd26; }
 .rank-row__position { color: #a0aeca; font-size: .67rem; font-variant-numeric: tabular-nums; }
 .rank-row__swatch {
     width: 18px;
@@ -219,7 +206,6 @@
     border-radius: 50%;
     color: var(--swatch, #99bdcd);
     background: radial-gradient(circle at 33% 32%, #f0f2f9, currentColor 33%, #2b3048 73%, #0b1222);
-    box-shadow: 0 0 11px color-mix(in srgb, currentColor 30%, transparent);
 }
 .rank-row__text { display: grid; gap: 4px; min-width: 0; }
 .rank-row__text strong { overflow: hidden; color: #e6efff; font-size: .79rem; text-overflow: ellipsis; white-space: nowrap; }
@@ -232,7 +218,7 @@
     display: grid;
     gap: 13px;
     padding: clamp(14px, 2vw, 23px);
-    border-radius: 20px;
+    border-radius: 10px;
 }
 .data-heading { display: flex; align-items: start; justify-content: space-between; gap: 8px 14px; }
 .data-heading h3 { font-size: clamp(1.06rem, 1.8vw, 1.4rem); letter-spacing: -.04em; }
@@ -285,7 +271,7 @@
 .method {
     margin-top: 24px;
     padding: 16px 20px;
-    border-radius: 15px;
+    border-radius: 10px;
     color: #d4e0f3;
     font-size: .84rem;
 }
@@ -367,7 +353,7 @@
     padding: 12px 14px;
     border: 1px solid var(--line);
     border-radius: 14px;
-    background: #0a1423b8;
+    background: #0c111a;
     font-size: .76rem;
     color: #bbcce4;
 }

@@ -8,9 +8,9 @@
 
 {% block content %}
     <section class="observatory" aria-labelledby="solar-title">
-        <canvas class="observatory__sky" data-sky aria-hidden="true"></canvas>
+        <canvas class="observatory__sky" id="solar-sky" aria-hidden="true"></canvas>
         <canvas class="observatory__scene" id="solar-scene" tabindex="0"
-                aria-label="Карта орбит. Перетащи карту или используй стрелки для вращения, в том числе под плоскость орбит. Плюс и минус меняют масштаб."></canvas>
+                aria-label="Карта орбит. Перетаскивание или стрелки вращают карту. Перетаскивание средней кнопкой сдвигает карту. Плюс и минус меняют масштаб."></canvas>
         <noscript><p class="scene-fallback">Для интерактивной карты нужен JavaScript.</p></noscript>
         <p class="scene-fallback" id="solar-fallback" hidden>В этом браузере недоступна отрисовка карты.</p>
 
@@ -19,33 +19,38 @@
             <p>Положения планет по модели JPL</p>
         </header>
 
-        <details class="object-panel glass" open>
-            <summary>Объекты</summary>
-            <div class="object-list" aria-label="Выбрать объект">
-                {% for key, name, color in planets %}
-                    <button class="object-button" type="button" data-body="{{ key }}" aria-pressed="false">
-                        <span class="object-dot" style="--object-color: {{ color }}" aria-hidden="true"></span>{{ name }}
-                    </button>
-                {% endfor %}
-            </div>
-        </details>
+        <div class="object-dock">
+            <details class="object-panel glass" open>
+                <summary>Объекты</summary>
+                <div class="object-list" aria-label="Выбрать объект">
+                    {% for key, name, color in planets %}
+                        <button class="object-button" type="button" data-body="{{ key }}" aria-pressed="false" aria-controls="solar-object-detail">
+                            <span class="object-dot" style="--object-color: {{ color }}" aria-hidden="true"></span>{{ name }}
+                        </button>
+                    {% endfor %}
+                </div>
+            </details>
 
-        <aside class="object-detail glass" aria-label="Сведения об объекте" hidden>
-            <button class="button icon-button object-close" id="solar-clear" type="button" aria-label="Закрыть сведения">×</button>
-            <div aria-live="polite">
-                <h2 id="body-name"></h2>
-                <p class="object-detail__type" id="body-type"></p>
-            </div>
-            <dl class="object-facts" id="body-facts"></dl>
-        </aside>
+            <aside class="object-detail glass" id="solar-object-detail" aria-label="Сведения об объекте" hidden>
+                <button class="button icon-button object-close" id="solar-clear" type="button" aria-label="Закрыть сведения">×</button>
+                <div aria-live="polite">
+                    <h2 id="body-name"></h2>
+                    <p class="object-detail__type" id="body-type"></p>
+                </div>
+                <dl class="object-facts" id="body-facts"></dl>
+                <p class="object-detail__note" id="body-note"></p>
+                <a class="quiet-link object-detail__source" id="body-source" href="https://nssdc.gsfc.nasa.gov/planetary/factsheet/">Источник NASA ↗</a>
+            </aside>
+        </div>
 
         <div class="scene-caption">
             <p>Расстояния сжаты, размеры тел увеличены.</p>
+            <p class="scene-caption__mouse">Средняя кнопка мыши — сдвиг карты.</p>
             <a class="quiet-link" href="https://ssd.jpl.nasa.gov/planets/approx_pos.html">Модель JPL ↗</a>
         </div>
 
         <details class="solar-events" id="solar-events">
-            <summary class="button glass liquid">События</summary>
+            <summary class="button glass">События</summary>
             <div class="solar-events__panel glass">
                 <ul class="solar-events__list" aria-label="Даты событий">
                     {% for event in events %}
@@ -69,7 +74,7 @@
         </details>
         <p class="scene-event-active glass" id="solar-event-active" role="status" hidden></p>
 
-        <div class="time-controls glass liquid" role="group" aria-label="Управление временем">
+        <div class="time-controls glass" role="group" aria-label="Управление временем">
             <div class="time-transport">
                 <button class="button icon-button time-direction" id="solar-reverse" type="button" aria-label="Время назад" aria-pressed="false" title="Время назад">
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 6 3 12l9 6Zm9 0-9 6 9 6Z"/></svg>
@@ -104,7 +109,7 @@
             <button class="button" id="solar-now" type="button">Сейчас</button>
         </div>
 
-        <div class="camera-controls glass liquid" role="group" aria-label="Управление камерой">
+        <div class="camera-controls glass" role="group" aria-label="Управление камерой">
             <button class="button icon-button" type="button" data-camera="out" aria-label="Уменьшить масштаб">−</button>
             <button class="button icon-button" type="button" data-camera="in" aria-label="Увеличить масштаб">+</button>
             <button class="button icon-button" type="button" data-camera="reset" aria-label="Сбросить камеру" title="Сбросить камеру">↺</button>

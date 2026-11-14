@@ -53,7 +53,7 @@
                 {% if planet.distance is not none %} · {{ planet.distance|number(1) }} св. лет{% endif %}
             </p>
             {% if priority %}
-                <div class="score-chip glass liquid">
+                <div class="score-chip glass">
                     <div>
                         <span class="score-chip__label">Приоритет для наблюдений</span>
                         <div><strong>{{ priority.score|number(1) }}</strong><small> из 100</small></div>

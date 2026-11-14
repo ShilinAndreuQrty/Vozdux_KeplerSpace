@@ -1,4 +1,4 @@
-import "./sky.js";
+import {createSolarSky} from "./solar-sky.js";
 import {clamp, fitCanvas, glow, planetSprite} from "./graphics.js";
 
 const TAU = Math.PI * 2;
@@ -59,6 +59,7 @@ const bodies = [
 ];
 
 const canvas = document.querySelector("#solar-scene");
+const solarSky = createSolarSky(document.querySelector("#solar-sky"));
 const timeLabel = document.querySelector("#solar-time");
 const timeMode = document.querySelector("#solar-time-mode");
 const pauseButton = document.querySelector("#solar-pause");
@@ -79,6 +80,20 @@ const eventStatus = document.querySelector("#solar-event-active");
 const bodyName = document.querySelector("#body-name");
 const bodyType = document.querySelector("#body-type");
 const bodyFacts = document.querySelector("#body-facts");
+const bodyNote = document.querySelector("#body-note");
+const bodySource = document.querySelector("#body-source");
+// Density (g/cm³) and sidereal rotation (hours) from NASA's Planetary Fact Sheets.
+const bodyScience = {
+    sun: [1.408, 609.1, "Солнце вращается с разной скоростью на разных широтах. Значение указано для экватора."],
+    mercury: [5.429, 1407.6, "За два оборота вокруг Солнца Меркурий трижды поворачивается вокруг своей оси."],
+    venus: [5.243, -5832.5, "В плотной атмосфере Венеры преобладает углекислый газ. Давление у поверхности — около 92 бар."],
+    earth: [5.514, 23.9, "Океан покрывает около 71% поверхности Земли."],
+    mars: [3.934, 24.6, "Олимп на Марсе — крупнейший вулкан Солнечной системы."],
+    jupiter: [1.326, 9.9, "Большое Красное Пятно — долгоживущий атмосферный вихрь Юпитера."],
+    saturn: [.687, 10.7, "Кольца Сатурна состоят преимущественно из частиц водяного льда."],
+    uranus: [1.270, -17.2, "Ось Урана наклонена примерно на 98° к перпендикуляру к плоскости орбиты."],
+    neptune: [1.638, 16.1, "В атмосфере Нептуна ветры достигают скорости более 1 900 км/ч."],
+};
 const bodyButtons = [...document.querySelectorAll("[data-body]")];
 const objectPanel = document.querySelector(".object-panel");
 const detailPanel = document.querySelector(".object-detail");
@@ -142,7 +157,7 @@ function cameraFrame() {
     const mobile = width <= 720;
     return {
         centerX: width * (mobile ? .50 : .56),
-        centerY: height * (mobile ? .48 : .51),
+        centerY: height * (mobile ? .55 : .51),
         scale: Math.min(width * (mobile ? .425 : .365), height * .71) * camera.zoom,
         yawCos: Math.cos(camera.yaw),
         yawSin: Math.sin(camera.yaw),
@@ -221,6 +236,14 @@ function applyDrag(worldByBody) {
     const {clientX, clientY, start, anchor, body, offsetX, offsetY} = drag;
     const dx = clientX - drag.startX;
     const dy = clientY - drag.startY;
+    if (drag.pan) {
+        const {scale} = cameraFrame();
+        if (scale) {
+            camera.screenX = start.screenX + dx / scale;
+            camera.screenY = start.screenY + dy / scale;
+        }
+        return;
+    }
     const pivot = worldByBody.get(body?.id) ?? anchor;
     rotateTo(start, dx * .006, dy * .006);
     const frame = cameraFrame();
@@ -316,6 +339,7 @@ function draw(time) {
     }
     if (drag?.moved) applyDrag(worldByBody);
     const frame = cameraFrame();
+    solarSky.draw(camera, frame);
     const positions = [];
 
     for (const body of bodies) {
@@ -360,6 +384,7 @@ function selectBody(body) {
         button.setAttribute("aria-pressed", String(button.dataset.body === body?.id));
     }
     if (!body) return;
+    objectPanel.open = true;
     bodyName.textContent = body.name;
     bodyType.textContent = body.type;
     const facts = [["Средний радиус", formatter.format(body.radius) + " км"]];
@@ -367,6 +392,15 @@ function selectBody(body) {
         facts.push(["Год", formatter.format(body.period) + " зем. сут."]);
         facts.push(["Большая полуось", formatter.format(body.elements[0]) + " а.е."]);
     }
+    const [density, rotation, note] = bodyScience[body.id];
+    facts.push(["Средняя плотность", formatter.format(density) + " г/см³"]);
+    const hours = Math.abs(rotation);
+    const period = hours >= 48 ? formatter.format(hours / 24) + " сут." : formatter.format(hours) + " ч";
+    facts.push(["Период вращения", period + (rotation < 0 ? " · обратное" : "")]);
+    bodyNote.textContent = note;
+    bodySource.href = body.id === "sun" ? "https://nssdc.gsfc.nasa.gov/planetary/factsheet/sunfact.html"
+        : "https://nssdc.gsfc.nasa.gov/planetary/factsheet/" + body.id + "fact.html";
+    detailPanel.scrollTop = 0;
     bodyFacts.replaceChildren(...facts.map(([label, value]) => {
         const row = document.createElement("div");
         const term = document.createElement("dt");
@@ -465,7 +499,7 @@ function endDrag(event) {
     if (event.type === "pointerup") movePointer(event);
     if (drag.moved) {
         draw(modelTime());
-    } else if (event.type === "pointerup") {
+    } else if (event.type === "pointerup" && !drag.pan) {
         selectBody(drag.body && selected !== drag.body ? drag.body : null);
     }
     drag = null;
@@ -504,6 +538,7 @@ if (initialContext) {
     for (const body of bodies) body.sprite = planetSprite({...body, diameter: 134});
     const resize = new ResizeObserver(() => {
         viewport = fitCanvas(canvas);
+        solarSky.resize();
         dirty = true;
     });
     resize.observe(canvas);
@@ -596,24 +631,30 @@ if (initialContext) {
         });
     }
     canvas.addEventListener("pointerdown", event => {
-        if (drag || !event.isPrimary || event.button !== 0 || !viewport.width || !viewport.height) return;
+        const pan = event.pointerType === "mouse" && event.button === 1;
+        if (drag || !event.isPrimary || (!pan && event.button !== 0) || !viewport.width || !viewport.height) return;
+        if (pan) event.preventDefault();
         if (dirty) draw(modelTime());
         const bounds = canvas.getBoundingClientRect();
         const x = event.clientX - bounds.left;
         const y = event.clientY - bounds.top;
-        const hit = bodyAt(x, y);
-        const frame = cameraFrame();
-        const anchor = grabAnchor(x, y, hit, frame);
-        const projected = project(anchor, frame);
         drag = {
-            id: event.pointerId,
+            id: event.pointerId, pan,
             startX: event.clientX, startY: event.clientY, clientX: event.clientX, clientY: event.clientY,
-            start: {...camera},
-            body: hit?.body, anchor,
-            offsetX: projected.x - x, offsetY: projected.y - y, moved: false,
+            start: {...camera}, moved: false,
         };
+        if (!pan) {
+            const hit = bodyAt(x, y);
+            const frame = cameraFrame();
+            const anchor = grabAnchor(x, y, hit, frame);
+            const projected = project(anchor, frame);
+            Object.assign(drag, {body: hit?.body, anchor, offsetX: projected.x - x, offsetY: projected.y - y});
+        }
         canvas.setPointerCapture(event.pointerId);
-        canvas.dataset.dragging = "";
+        canvas.dataset.dragging = pan ? "pan" : "rotate";
+    });
+    canvas.addEventListener("auxclick", event => {
+        if (event.button === 1) event.preventDefault();
     });
     canvas.addEventListener("pointermove", event => {
         if (drag?.id === event.pointerId) movePointer(event);

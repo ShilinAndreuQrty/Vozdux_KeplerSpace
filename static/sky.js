@@ -7,10 +7,10 @@ function drawSky(canvas) {
     context.clearRect(0, 0, width, height);
     const span = Math.min(width, height);
 
-    for (let i = 0; i < 46; i++) {
+    for (let i = 0; i < 18; i++) {
         const x = random() * width;
         const y = height * (.74 - .51 * x / width + (random() - .5) * .43);
-        const color = i % 3 === 0 ? "rgba(150, 126, 205, .093)" : "rgba(92, 142, 208, .077)";
+        const color = i % 3 === 0 ? "rgba(150, 126, 205, .055)" : "rgba(92, 142, 208, .048)";
         glow(context, x, y, span * (.06 + random() * .24), color);
     }
 

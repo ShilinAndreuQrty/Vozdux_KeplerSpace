@@ -22,7 +22,7 @@
                 <span class="menu-toggle__icon" aria-hidden="true"></span>
                 Меню
             </button>
-            <nav class="site-nav glass liquid" id="site-navigation" aria-label="Разделы KeplerSpace">
+            <nav class="site-nav glass" id="site-navigation" aria-label="Разделы KeplerSpace">
                 {% for slug, item in sections.items() %}
                     <a class="site-nav__link"
                        href="{{ request.url_for('section', slug=slug).path if slug else request.url_for('home').path }}"
