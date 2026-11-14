@@ -42,9 +42,61 @@ function applyMass(all){let m=+$("tb-mass").value;if(!Number.isFinite(m)||m<=0||
 function applyVelocity(all){let p=read();if(![p.v,p.a].every(Number.isFinite)||p.v<0||p.v>10000||Math.abs(p.a)>360){alert("Проверь скорость и угол вектора.");return}B.forEach((b,i)=>{if(all||i===sel){let d=all?b:draftFor(i);setV(d,p.v,p.a);if(all){b.vx=d.vx;b.vy=d.vy;delete DRAFT[i]}}});if(!all){let d=draftFor(sel);setV(d,p.v,p.a)}$("tb-status").textContent=all?"Скорость применена ко всем телам":"Скорость применена к телу";reset();editor()}
 function updateDraftFromInputs(){if(sel<0)return;let v=+$("tb-vel").value,a=+$("tb-angle").value;if(!Number.isFinite(v)||!Number.isFinite(a))return;setV(draftFor(sel),v,a);DIRTY[sel]=true;$("tb-vel-out").textContent=fmt(v);$("tb-vel-range").value=clamp(v,0,100);draw()}
 c.addEventListener("pointerdown",e=>{let r=c.getBoundingClientRect(),p={x:e.clientX-r.left,y:e.clientY-r.top};
- if(sel>=0){let b=B[sel],d=draftFor(sel),q=scr(b),a=Math.atan2(d.vy,d.vx),len=clamp(vel(d)*.65,10,65),tip={x:q.x+Math.cos(a)*len,y:q.y-Math.sin(a)*len};if(Math.hypot(tip.x-p.x,tip.y-p.y)<15){vectorDrag=true;c.setPointerCapture(e.pointerId);return}}
- let i=B.findIndex(b=>{let q=scr(b);return Math.hypot(q.x-p.x,q.y-p.y)<19});if(i>=0){sel=i;editor();drag=i;c.setPointerCapture(e.pointerId);draw()}});
-c.addEventListener("pointermove",e=>{let r=c.getBoundingClientRect(),p={x:e.clientX-r.left,y:e.clientY-r.top};if(vectorDrag&&sel>=0&&!run){let b=scr(B[sel]),dx=p.x-b.x,dy=b.y-p.y,d=draftFor(sel),v=Math.hypot(dx,dy)/.65/K,a=Math.atan2(dy,dx)*180/Math.PI;setV(d,v,a);DIRTY[sel]=true;editor();draw();return}if(drag<0||run)return;let q=world(p);B[drag].x=q.x;B[drag].y=q.y;T[drag]=[{...q}];editor();draw()});
+    if(sel>=0){
+        let b=B[sel],d=draftFor(sel),q=scr(b),
+            a=Math.atan2(d.vy,d.vx),
+            len=clamp(vel(d)*.65,10,65),
+            tip={x:q.x+Math.cos(a)*len,y:q.y-Math.sin(a)*len};
+
+        if(Math.hypot(tip.x-p.x,tip.y-p.y)<15){
+            vectorDrag=true;
+            c.setPointerCapture(e.pointerId);
+            return;
+        }
+    }
+    let i=B.findIndex(b=>{let q=scr(b);return Math.hypot(q.x-p.x,q.y-p.y)<19});
+    if(i>=0){
+        if(i!==sel && sel>=0){
+            const hadChanges=!!DIRTY[sel];
+            delete DRAFT[sel];
+            delete DIRTY[sel];
+            if(hadChanges){
+            $("tb-status").textContent="Неподтверждённые изменения отменены";
+            }
+        }
+        sel=i;
+        editor();
+        drag=i;
+        c.setPointerCapture(e.pointerId);
+        draw();
+    }});
+c.addEventListener("pointermove",e=>{
+  let r=c.getBoundingClientRect(),
+      p={x:e.clientX-r.left,y:e.clientY-r.top};
+
+  if(vectorDrag&&sel>=0&&!run){
+    let b=scr(B[sel]),
+        dx=p.x-b.x,
+        dy=b.y-p.y,
+        d=draftFor(sel),
+        v=Math.hypot(d.vx,d.vy)/K,
+        a=Math.atan2(dy,dx)*180/Math.PI;
+
+    setV(d,v,a);
+    DIRTY[sel]=true;
+    editor();
+    draw();
+    return;
+  }
+
+  if(drag<0||run)return;
+  let q=world(p);
+  B[drag].x=q.x;
+  B[drag].y=q.y;
+  T[drag]=[{...q}];
+  editor();
+  draw();
+});
 function end(){drag=-1;vectorDrag=false}c.addEventListener("pointerup",end);c.addEventListener("pointercancel",end);
 $("tb-mass").oninput=()=>{$("tb-mass-range").value=clamp(+$("tb-mass").value||.0001,.0001,10);$("tb-mass-out").textContent=fmt(+$("tb-mass").value||0,5)};
 $("tb-mass-range").oninput=e=>{$("tb-mass").value=e.target.value;$("tb-mass-out").textContent=fmt(+e.target.value,5)};
@@ -54,7 +106,6 @@ $("tb-angle").oninput=updateDraftFromInputs;
 $("tb-apply").onclick=()=>{let p=read();if(![p.m,p.x,p.y].every(Number.isFinite)||p.m<=0||p.m>1000||Math.abs(p.x)>10000||Math.abs(p.y)>10000){alert("Проверь массу и координаты.");return}B[sel].m=p.m;B[sel].x=p.x;B[sel].y=p.y;let d=draftFor(sel);B[sel].vx=d.vx;B[sel].vy=d.vy;delete DRAFT[sel];delete DIRTY[sel];$("tb-status").textContent="Параметры тела применены";reset();editor()};
 $("tb-reset-selected").onclick=resetSelected;
 $("tb-mass-all").onclick=()=>applyMass(true);$("tb-velocity-all").onclick=()=>applyVelocity(true);
-$("tb-velocity-apply").onclick=()=>applyVelocity(false);
 $("tb-preset").onchange=e=>preset(e.target.value);
 $("tb-start").onclick=()=>{if(Object.keys(DIRTY).length){$("tb-status").textContent="Сначала примени или сбрось изменённый черновой вектор";return}run=true;$("tb-start").disabled=true;$("tb-pause").disabled=false;$("tb-status").textContent="Симуляция выполняется"};
 $("tb-pause").onclick=()=>{run=!run;$("tb-pause").textContent=run?"Пауза":"Продолжить";$("tb-start").disabled=run;$("tb-status").textContent=run?"Симуляция выполняется":"Пауза"};
