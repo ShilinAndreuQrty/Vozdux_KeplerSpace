@@ -1,3 +1,4 @@
+import { showToast } from "./three-body-toast.js";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
@@ -266,10 +267,8 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
     const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
     const fmt = (x, n = 3) => Number(x).toFixed(n).replace(".", ",");
 
-    function setStatus(message, alert = false) {
-        const status = $("tb-status");
-        status.textContent = message;
-        status.classList.toggle("is-alert", alert);
+    function setStatus(message) {
+        $("tb-status").textContent = message;
     }
 
     function hasPendingChanges() {
@@ -520,9 +519,9 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
             acc = 0;
             $("tb-start").disabled = true;
             $("tb-start").textContent = collision ? "Столкновение" : "Выброс тела";
-            setStatus(
-                collision ? "Модель остановлена: обнаружено столкновение" : "Модель остановлена: обнаружен выброс тела",
-                true
+            setStatus("Модель остановлена");
+            showToast(
+                collision ? "Модель остановлена: обнаружено столкновение" : "Модель остановлена: обнаружен выброс тела"
             );
         }
     }
@@ -708,7 +707,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
     function applyMass(all) {
         const p = read();
         if (!Number.isFinite(p.m) || p.m <= 0 || p.m > 1000) {
-            alert("Масса должна быть больше нуля и не превышать 1000 масс Солнца.");
+            showToast("Масса должна быть больше нуля и не превышать 1000 масс Солнца.");
             return;
         }
         if (sel >= 0) commitSelectedChanges(p);
@@ -722,7 +721,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
     function applyVelocity(all) {
         const p = read();
         if (!Number.isFinite(p.v) || p.v < 0 || p.v > 10000 || !Number.isFinite(p.vz) || Math.abs(p.vz) > 10000) {
-            alert("Проверь компоненты скорости. Допустимое значение по каждой оси: от -10000 до 10000 км/с.");
+            showToast("Проверь компоненты скорости. Допустимое значение по каждой оси: от -10000 до 10000 км/с.");
             return;
         }
         if (sel >= 0) commitSelectedChanges(p);
@@ -896,7 +895,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
             p.m <= 0 || p.m > 1000 ||
             Math.abs(p.x) > 10000 || Math.abs(p.y) > 10000 || Math.abs(p.z) > 10000 ||
             p.v < 0 || p.v > 10000 || Math.abs(p.vz) > 10000) {
-            alert("Проверь массу, координаты и компоненты скорости.");
+            showToast("Проверь массу, координаты и компоненты скорости.");
             return;
         }
         commitSelectedChanges(p);
@@ -922,7 +921,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
     $("tb-preset").onchange = event => preset(event.target.value);
     $("tb-start").onclick = () => {
         if (hasPendingChanges()) {
-            setStatus("Сначала примени параметры или нажми «Отмена».");
+            showToast("Сначала примени параметры или нажми «Отмена».");
             return;
         }
         run = !run;

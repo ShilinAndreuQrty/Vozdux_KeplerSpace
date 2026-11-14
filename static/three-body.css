@@ -103,7 +103,25 @@
     font-weight: 700;
     line-height: 1.45;
 }
-.tb-status.is-alert { color: #ffd8dc; border-color: #ff687580; background: #461e27; }
+.tb-toast {
+    position: fixed;
+    z-index: 5;
+    bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    left: 50%;
+    transform: translateX(-50%);
+    width: max-content;
+    max-width: min(440px, calc(100vw - 32px));
+    padding: 10px 16px;
+    border-color: #ff687560;
+    color: #f8e1e4;
+    background: #241b24;
+    box-shadow: 0 4px 20px #0005;
+    font-size: .85rem;
+    line-height: 1.45;
+    text-align: center;
+    pointer-events: none;
+}
+.tb-toast:empty { opacity: 0; }
 .tb-editor, .tb-fields, .tb-presets { display: grid; gap: 9px; }
 .tb-editor { padding: 15px; }
 .tb-editor h2 { margin-top: 8px; font-size: 1.25rem; }

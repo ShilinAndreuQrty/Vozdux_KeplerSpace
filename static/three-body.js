@@ -1,3 +1,4 @@
+import { showToast } from "./three-body-toast.js";
 (()=>{
 const c=document.getElementById("tb-canvas");if(!c)return;
 const $=id=>document.getElementById(id),g=c.getContext("2d");
@@ -31,7 +32,9 @@ function markCustom(){
     $("tb-preset").value="custom";
 }
 const clamp=(x,a,b)=>Math.max(a,Math.min(b,x)),fmt=(x,n=3)=>Number(x).toFixed(n).replace(".",",");
-function setStatus(message, alert = false) {const status = $("tb-status");status.textContent = message;status.classList.toggle("is-alert", alert);}
+function setStatus(message) {
+    $("tb-status").textContent = message;
+}
 function hasPendingChanges() {
     return Object.keys(DIRTY).length > 0;
 }
@@ -227,12 +230,12 @@ function detectEvents() {
         acc = 0;
 
         $("tb-start").disabled = true;
-        $("tb-start").textContent = "Столкновение";
-        setStatus(
+        $("tb-start").textContent = collision ? "Столкновение" : "Выброс тела";
+        setStatus("Модель остановлена");
+        showToast(
             collision
                 ? "Модель остановлена: обнаружено столкновение"
-                : "Модель остановлена: обнаружен выброс тела",
-            true
+                : "Модель остановлена: обнаружен выброс тела"
         );
     }
 }
@@ -340,8 +343,8 @@ function clearSelection(){
 }
 function read(){return{m:+$("tb-mass").value,x:+$("tb-x").value,y:+$("tb-y").value,v:+$("tb-vel").value,a:+$("tb-angle").value}}
 function commitSelectedChanges(p) {if (sel < 0) return;const d = draftFor(sel);B[sel].m = p.m;B[sel].x = p.x;B[sel].y = p.y;B[sel].vx = d.vx;B[sel].vy = d.vy;delete DRAFT[sel];delete DIRTY[sel];}
-function applyMass(all) {const p = read();if (!Number.isFinite(p.m) || p.m <= 0 || p.m > 1000) {alert("Масса должна быть больше нуля и не превышать 1000 масс Солнца.");return;}if (sel >= 0) {commitSelectedChanges(p);}markCustom();if (all) {B.forEach(b => b.m = p.m);}setStatus(all? "Масса применена ко всем телам": "Масса применена к телу");reset();editor();}
-function applyVelocity(all) {const p = read();if (!Number.isFinite(p.v) || p.v < 0 || p.v > 10000) {alert("Скорость должна быть от 0 до 10000 км/с.");return;}if (sel >= 0) {commitSelectedChanges(p);}markCustom();if (all) {B.forEach(b => {const angle = Math.atan2(b.vy, b.vx);const velocity = p.v * KM_S_TO_AU_DAY;b.vx = velocity * Math.cos(angle);b.vy = velocity * Math.sin(angle);});} else if (sel >= 0) {setV(B[sel], p.v, p.a);}setStatus(all? "Скорость применена ко всем телам": "Скорость применена к телу");reset();editor();}
+function applyMass(all) {const p = read();if (!Number.isFinite(p.m) || p.m <= 0 || p.m > 1000) {showToast("Масса должна быть больше нуля и не превышать 1000 масс Солнца.");return;}if (sel >= 0) {commitSelectedChanges(p);}markCustom();if (all) {B.forEach(b => b.m = p.m);}setStatus(all? "Масса применена ко всем телам": "Масса применена к телу");reset();editor();}
+function applyVelocity(all) {const p = read();if (!Number.isFinite(p.v) || p.v < 0 || p.v > 10000) {showToast("Скорость должна быть от 0 до 10000 км/с.");return;}if (sel >= 0) {commitSelectedChanges(p);}markCustom();if (all) {B.forEach(b => {const angle = Math.atan2(b.vy, b.vx);const velocity = p.v * KM_S_TO_AU_DAY;b.vx = velocity * Math.cos(angle);b.vy = velocity * Math.sin(angle);});} else if (sel >= 0) {setV(B[sel], p.v, p.a);}setStatus(all? "Скорость применена ко всем телам": "Скорость применена к телу");reset();editor();}
 function updateDraftFromInputs(){if(sel<0)return;let v=+$("tb-vel").value,a=+$("tb-angle").value;if(!Number.isFinite(v)||!Number.isFinite(a))return;setV(draftFor(sel),v,a);markPendingChange();markCustom();$("tb-vel-out").textContent=fmt(v);$("tb-vel-range").value=clamp(v,0,100);draw()}
 c.addEventListener("pointerdown",e=>{let r=c.getBoundingClientRect(),p={x:e.clientX-r.left,y:e.clientY-r.top};
     if(sel>=0){
@@ -442,12 +445,12 @@ $("tb-y").oninput = markPendingChange;
 $("tb-vel").oninput=updateDraftFromInputs;
 $("tb-vel-range").oninput=e=>{$("tb-vel").value=e.target.value;updateDraftFromInputs()};
 $("tb-angle").oninput=updateDraftFromInputs;
-$("tb-apply").onclick = () => {if (sel < 0) return;const p = read();if (![p.m, p.x, p.y].every(Number.isFinite) ||p.m <= 0 || p.m > 1000 ||Math.abs(p.x) > 10000 ||Math.abs(p.y) > 10000) {alert("Проверь массу и координаты.");return;}commitSelectedChanges(p);markCustom();setStatus("Параметры тела применены");reset();editor();};
+$("tb-apply").onclick = () => {if (sel < 0) return;const p = read();if (![p.m, p.x, p.y].every(Number.isFinite) ||p.m <= 0 || p.m > 1000 ||Math.abs(p.x) > 10000 ||Math.abs(p.y) > 10000) {showToast("Проверь массу и координаты.");return;}commitSelectedChanges(p);markCustom();setStatus("Параметры тела применены");reset();editor();};
 $("tb-cancel").onclick = () => {if (sel < 0) return;delete DRAFT[sel];delete DIRTY[sel];editor();updateStartControl();setStatus("Несохранённые изменения отменены");};
 $("tb-reset-selected").onclick=resetSelected;
 $("tb-mass-all").onclick=()=>applyMass(true);$("tb-velocity-all").onclick=()=>applyVelocity(true);
 $("tb-preset").onchange=e=>preset(e.target.value);
-$("tb-start").onclick = () => {if (hasPendingChanges()) {setStatus("Сначала примени параметры или нажми «Отмена».");return;}run = !run;$("tb-start").textContent = run? "Остановить": "Продолжить";setStatus(run ? "Симуляция выполняется" : "Симуляция остановлена");};
+$("tb-start").onclick = () => {if (hasPendingChanges()) {showToast("Сначала примени параметры или нажми «Отмена».");return;}run = !run;$("tb-start").textContent = run? "Остановить": "Продолжить";setStatus(run ? "Симуляция выполняется" : "Симуляция остановлена");};
 $("tb-reset").onclick=resetAll;$("tb-speed").oninput=e=>{speed=+e.target.value;$("tb-speed-out").textContent=speed+"×"};
 function frame(n) {
     if (!last) last = n;

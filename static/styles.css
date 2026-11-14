@@ -302,13 +302,56 @@ h2 { line-height: 1.13; letter-spacing: -.048em; }
     content: "";
 }
 .preview-page--constellations { --preview-art: url("images/constellations-bg.webp"); }
-.preview-page--black-holes { --preview-art: url("images/black-holes-bg.webp"); }
 .preview-page .page {
     display: grid;
     align-items: center;
     min-height: min(68svh, 720px);
     flex: 1;
     padding-block: clamp(70px, 12vh, 140px);
+}
+.preview-page--black-holes { --preview-art: url("images/black-holes-bg.webp"); }
+.space-backdrop {
+    position: relative;
+    isolation: isolate;
+    --glass-fill: #11151ee8;
+}
+.space-backdrop::before {
+    content: "";
+    position: absolute;
+    z-index: -1;
+    inset: 0 0 auto;
+    height: 100svh;
+    background: var(--space-art) var(--space-position, center) / var(--space-size, cover) no-repeat;
+    opacity: var(--space-opacity, .7);
+    mask-image: linear-gradient(#000 78%, transparent);
+    pointer-events: none;
+}
+.catalog-page {
+    --space-art: url("images/exoplanets-earth-bg.jpg");
+    --space-position: left 90%;
+    --space-size: max(109%, calc(100svh * 16 / 9)) auto;
+    --space-opacity: .56;
+}
+.three-body-page { --space-art: url("images/three-body-nebula-bg.jpg"); }
+@media (max-width: 1050px) {
+    .catalog-page {
+        --space-position: right center;
+        --space-size: cover;
+        --space-opacity: .42;
+    }
+}
+.preview-page--black-holes .page {
+    align-content: center;
+    width: min(calc(100% - 2 * var(--gutter)), 1280px);
+    margin-inline: max(var(--gutter), calc((100% - 1440px) / 2)) auto;
+    min-height: 0;
+    padding-block: clamp(36px, 7vh, 84px);
+}
+.preview-page--black-holes .panel-label { color: var(--warm); }
+.preview-page--black-holes h1 { margin-top: 10px; }
+.preview-page--black-holes .section-panel__description {
+    max-width: 38ch;
+    margin: 18px 0 26px;
 }
 .section-panel--three-body {
     background:
@@ -327,6 +370,24 @@ h2 { line-height: 1.13; letter-spacing: -.048em; }
             var(--preview-art) 77% 77% / auto min(62vh, 530px) no-repeat;
     }
     .section-panel--three-body { min-height: 50vh; padding: 22px; background-position: 85% center; }
+}
+@media (max-width: 760px) {
+    .preview-page--black-holes::before { display: none; }
+    .preview-page--black-holes .page {
+        grid-template-columns: minmax(0, 1fr);
+        align-content: start;
+        gap: 16px;
+        padding-block: 36px 22px;
+    }
+    .preview-page--black-holes .page::after {
+        content: "";
+        width: min(100%, 560px);
+        justify-self: center;
+        aspect-ratio: 16 / 9;
+        background: var(--preview-art) center / contain no-repeat;
+        mix-blend-mode: screen;
+    }
+    .preview-page--black-holes .section-panel__description { margin: 14px 0 20px; }
 }
 
 .site-footer { margin-top: auto; color: var(--muted); font-size: .73rem; }
