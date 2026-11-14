@@ -155,9 +155,10 @@ function compressedPoint(point) {
 function cameraFrame() {
     const {width, height} = viewport;
     const mobile = width <= 720;
+
     return {
-        centerX: width * (mobile ? .50 : .56),
-        centerY: height * (mobile ? .55 : .51),
+        centerX: width * 0.5,
+        centerY: height * 0.5,
         scale: Math.min(width * (mobile ? .425 : .365), height * .71) * camera.zoom,
         yawCos: Math.cos(camera.yaw),
         yawSin: Math.sin(camera.yaw),
