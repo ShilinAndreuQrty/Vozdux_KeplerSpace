@@ -23,7 +23,7 @@ BUNDLED = DATA_DIR / "catalog.json"
 LOCAL = DATA_DIR / "catalog.local.json"
 EXAMPLE = "55 Cnc e"
 TOP_COUNT = 50
-CATALOG_VERSION = 3
+CATALOG_VERSION = 4
 LIGHT_YEARS_PER_PC = 3.26156
 
 FIELDS = {
@@ -182,29 +182,65 @@ def esi_component(value, reference_value, weight):
     return similarity ** weight
 
 
-def earth_similarity(radius, density, escape_velocity, surface_temperature=None):
-    # Веса Schulze-Makuch et al. (2011)
-    radius_esi = esi_component(radius, 1.0, 0.57)
-    density_esi = esi_component(density, 5.514, 1.07)
-    escape_esi = esi_component(escape_velocity, 11.186, 0.70)
-    temperature_esi = esi_component(surface_temperature, 288.0, 5.58)
+ESI_WEIGHTS = {
+    "radius": 0.57,
+    "density": 1.07,
+    "escape_velocity": 0.70,
+    "surface_temperature": 5.58,
+}
 
-    interior = None
-    if radius_esi is not None and density_esi is not None:
-        interior = (radius_esi * density_esi) ** (1 / (0.57 + 1.07))
 
-    surface = None
-    if escape_esi is not None and temperature_esi is not None:
-        surface = (escape_esi * temperature_esi) ** (1 / (0.70 + 5.58))
+def earth_similarity(
+    radius,
+    density,
+    escape_velocity,
+    surface_temperature=None,
+):
+    references = {
+        "radius": (radius, 1.0),
+        "density": (density, 5.514),
+        "escape_velocity": (escape_velocity, 11.186),
+        "surface_temperature": (surface_temperature, 288.0),
+    }
 
-    # Объединяем группы с учётом суммы весов их компонентов.
-    interior_weight = 0.57 + 1.07
-    surface_weight = 0.70 + 5.58
-    total_weight = interior_weight + surface_weight
+    components = {}
+
+    for name, (value, reference_value) in references.items():
+        components[name] = (
+            (
+                1 - abs(value - reference_value) / (value + reference_value)
+            ) ** ESI_WEIGHTS[name]
+            if value is not None
+            and math.isfinite(value)
+            and value > 0
+            else None
+        )
+
+    interior = (
+        math.sqrt(
+            components["radius"] * components["density"]
+        )
+        if all(
+            components[key] is not None
+            for key in ("radius", "density")
+        )
+        else None
+    )
+
+    surface = (
+        math.sqrt(
+            components["escape_velocity"]
+            * components["surface_temperature"]
+        )
+        if all(
+            components[key] is not None
+            for key in ("escape_velocity", "surface_temperature")
+        )
+        else None
+    )
 
     score = (
-        interior ** (interior_weight / total_weight)
-        * surface ** (surface_weight / total_weight)
+        math.sqrt(interior * surface)
         if interior is not None and surface is not None
         else None
     )
@@ -213,6 +249,7 @@ def earth_similarity(radius, density, escape_velocity, surface_temperature=None)
         "score": score,
         "interior": interior,
         "surface": surface,
+        "components": components,
         "complete": score is not None,
     }
 
@@ -248,6 +285,64 @@ def physical_properties(metrics):
         "escape_velocity": escape_velocity,
         "density_available": density is not None,
         "escape_velocity_available": escape_velocity is not None,
+    }
+
+def evaluate_planet(metrics, zone, orbit):
+    radius_field = metrics.get("radius") or {}
+    mass_field = metrics.get("mass") or {}
+
+    radius = central(radius_field)
+    mass = central(mass_field)
+
+    published = (
+        radius is not None
+        and mass is not None
+        and radius > 0
+        and mass > 0
+        and radius_field.get("kind") == "published"
+        and mass_field.get("kind") == "published"
+    )
+
+    density = (
+        5.514 * mass / radius**3
+        if published
+        else None
+    )
+
+    escape_velocity = (
+        11.186 * math.sqrt(mass / radius)
+        if published
+        else None
+    )
+
+    # Равновесная температура NASA не является
+    # температурой поверхности, поэтому здесь None.
+    surface_temperature = central(
+        metrics.get("surface_temperature")
+    )
+
+    esi = earth_similarity(
+        radius,
+        density,
+        escape_velocity,
+        surface_temperature,
+    )
+
+    physical = {
+        "radius": radius,
+        "mass": mass,
+        "density": density,
+        "escape_velocity": escape_velocity,
+        "density_available": density is not None,
+        "escape_velocity_available": escape_velocity is not None,
+        "derived_from_published_measurements": published,
+    }
+
+    return {
+        "esi": esi,
+        "habitable_zone": zone,
+        "orbit": orbit,
+        "physical_properties": physical,
     }
 
 def data_confidence(metrics):
@@ -289,13 +384,23 @@ def habitable_zone(
     gravity=None,
 ):
     if circumbinary:
-        return {"reason": "Для системы двух звёзд нужна отдельная модель."}
+        return {
+            "available": False,
+            "reason": "Для двойных звёзд нужна отдельная модель.",
+        }
 
-    if (gravity is not None and gravity < 3.6) or re.search(
+    if (
+        gravity is not None and gravity < 3.6
+    ) or re.search(
         r"(?<![A-Z])(?:III|IV|II|I[ab]?)\b",
         spectral_type or "",
     ):
-        return {"reason": "Модель рассчитана для звёзд главной последовательности."}
+        return {
+            "available": False,
+            "reason": (
+                "Модель рассчитана для звёзд главной последовательности."
+            ),
+        }
 
     if (
         temperature is None
@@ -304,76 +409,138 @@ def habitable_zone(
         or not math.isfinite(luminosity)
         or luminosity <= 0
     ):
-        return {"reason": "Недостаточно данных о звезде."}
+        return {
+            "available": False,
+            "reason": "Необходимы температура и светимость звезды.",
+        }
 
     if not 2000 <= temperature <= 7200:
-        return {"reason": "Температура звезды за пределами модели (2 000–7 200 К)."}
+        return {
+            "available": False,
+            "reason": "Температура за пределами модели (2000–7200 K).",
+        }
 
-    # Haqq-Misra, Wolf & Kopparapu (2026), ExoColumn.
     offset = temperature - 5780
 
     coefficients = {
         "runaway": (
-            1.0684, 9.1544e-5, 1.6309e-8,
-            1.7962e-12, 1.2497e-16,
+            1.0684,
+            9.1544e-5,
+            1.6309e-8,
+            1.7962e-12,
+            1.2497e-16,
         ),
-        "moist_greenhouse": (
-            1.0636, 8.7628e-5, 5.7056e-9,
-            -3.2355e-12, -5.3193e-16,
+        "moist": (
+            1.0636,
+            8.7628e-5,
+            5.7056e-9,
+            -3.2355e-12,
+            -5.3193e-16,
         ),
-        "maximum_greenhouse": (
-            0.3851, 7.1906e-5, 3.2723e-9,
-            -3.2530e-12, -5.4811e-16,
+        "maximum": (
+            0.3851,
+            7.1906e-5,
+            3.2723e-9,
+            -3.2530e-12,
+            -5.4811e-16,
         ),
     }
 
     boundaries = {}
 
     for name, values in coefficients.items():
-        effective_flux = sum(
-            coefficient * offset ** power
+        flux = sum(
+            coefficient * offset**power
             for power, coefficient in enumerate(values)
         )
 
-        if effective_flux <= 0 or not math.isfinite(effective_flux):
-            return {"reason": "Модель не дала физически допустимую границу."}
+        if flux <= 0 or not math.isfinite(flux):
+            return {
+                "available": False,
+                "reason": "Некорректная граница зоны обитаемости.",
+            }
 
-        boundaries[name] = math.sqrt(luminosity / effective_flux)
+        boundaries[name] = math.sqrt(luminosity / flux)
 
     return {
-        **boundaries,
-        "inner": boundaries["moist_greenhouse"],
-        "outer": boundaries["maximum_greenhouse"],
+        "available": True,
+        "inner": boundaries["moist"],
+        "outer": boundaries["maximum"],
+        "runaway": boundaries["runaway"],
+        "moist_greenhouse": boundaries["moist"],
+        "maximum_greenhouse": boundaries["maximum"],
+        "model": "ExoColumn 2026",
+        "unit": "AU",
     }
 
-
 def orbit_summary(axis, eccentricity, zone):
-    result = {"axis": axis, "eccentricity": eccentricity, "near": None, "far": None, "fraction": None}
-    if axis is None or axis <= 0 or eccentricity is None or not 0 <= eccentricity < 1:
+    result = {
+        "axis": axis,
+        "eccentricity": eccentricity,
+        "near": None,
+        "far": None,
+        "fraction": None,
+    }
+
+    if (
+        axis is None
+        or eccentricity is None
+        or not math.isfinite(axis)
+        or not math.isfinite(eccentricity)
+        or axis <= 0
+        or not 0 <= eccentricity < 1
+    ):
         return result
+
     near = axis * (1 - eccentricity)
     far = axis * (1 + eccentricity)
-    result.update(near=near, far=far)
-    if "inner" not in zone:
+
+    result.update(
+        near=near,
+        far=far,
+    )
+
+    if not zone or not zone.get("available"):
         return result
 
-    inner, outer = zone["inner"], zone["outer"]
+    inner = zone["inner"]
+    outer = zone["outer"]
+
     if eccentricity == 0:
         fraction = float(inner <= axis <= outer)
     else:
-        # Mean anomaly grows linearly in time. The outward half-orbit is symmetric.
         def time_inside(distance):
             if distance <= near:
-                return 0
+                return 0.0
+
             if distance >= far:
-                return 1
-            anomaly = math.acos(max(-1, min(1, (1 - distance / axis) / eccentricity)))
-            return (anomaly - eccentricity * math.sin(anomaly)) / math.pi
+                return 1.0
 
-        fraction = time_inside(outer) - time_inside(inner)
-    result["fraction"] = fraction
+            cosine = (
+                1 - distance / axis
+            ) / eccentricity
+
+            anomaly = math.acos(
+                max(-1.0, min(1.0, cosine))
+            )
+
+            # Средняя аномалия пропорциональна времени.
+            return (
+                anomaly
+                - eccentricity * math.sin(anomaly)
+            ) / math.pi
+
+        fraction = (
+            time_inside(outer)
+            - time_inside(inner)
+        )
+
+    result["fraction"] = max(
+        0.0,
+        min(1.0, fraction),
+    )
+
     return result
-
 
 def habitability_heuristic(metrics, zone, orbit, giant):
     """
@@ -489,15 +656,7 @@ def build_catalog(rows, fetched_at):
             continue
 
         metrics = planet_metrics(row)
-        physical = physical_properties(metrics)
         confidence = data_confidence(metrics)
-
-        similarity = earth_similarity(
-            physical["radius"],
-            physical["density"],
-            physical["escape_velocity"],
-            surface_temperature=None,
-        )
 
         name, host = row["pl_name"], row["hostname"]
         spectral_type = row["st_spectype"] or None
@@ -519,9 +678,30 @@ def build_catalog(rows, fetched_at):
         )
 
         axis = None if circumbinary else central(metrics["axis"])
-        orbit = orbit_summary(axis, measured_e, zone)
+
+        orbit = orbit_summary(
+            axis,
+            measured_e,
+            zone,
+        )
+
+        evaluation = evaluate_planet(
+            metrics,
+            zone,
+            orbit,
+        )
+
+        similarity = evaluation["esi"]
+        physical = evaluation["physical_properties"]
+
         giant = giant_kind(row, metrics)
-        index = habitability_heuristic(metrics, zone, orbit, giant)
+
+        index = habitability_heuristic(
+            metrics,
+            zone,
+            orbit,
+            giant,
+        )
 
         if index:
             ranking.append((name, host, index["score"]))
@@ -548,8 +728,15 @@ def build_catalog(rows, fetched_at):
 
     for host in sorted(hosts):
         for (
-            row, metrics, similarity, physical, confidence,
-            zone, orbit, giant, index
+            row,
+            metrics,
+            similarity,
+            zone,
+            orbit,
+            giant,
+            index,
+            physical,
+            confidence,
         ) in systems[host]:
 
             name = row["pl_name"]
