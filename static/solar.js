@@ -126,8 +126,8 @@ function compressedPoint(point) {
 function cameraFrame(width, height) {
     const mobile = width <= 720;
     return {
-        x: width * (mobile ? .50 : .56) + camera.panX,
-        y: height * (mobile ? .54 : .51) + camera.panY,
+        x: width * 0.5,
+        y: height * 0.5,
         scale: Math.min(width * (mobile ? .425 : .365), height * .71) * camera.zoom,
     };
 }
@@ -425,29 +425,32 @@ if (initialContext) {
     }
     canvas.addEventListener("pointerdown", event => {
         if (!event.isPrimary || event.button !== 0) return;
-        const bounds = canvas.getBoundingClientRect();
-        const x = event.clientX - bounds.left;
-        const y = event.clientY - bounds.top;
-        const hit = bodyAt(x, y);
+
         drag = {
-            x: event.clientX, y: event.clientY, yaw: camera.yaw, tilt: camera.tilt,
-            anchor: hit?.world ?? grabAnchor(x, y),
-            offsetX: hit ? x - hit.x : 0, offsetY: hit ? y - hit.y : 0,
+            x: event.clientX,
+            y: event.clientY,
+            yaw: camera.yaw,
+            tilt: camera.tilt,
             moved: false,
         };
+
         canvas.setPointerCapture(event.pointerId);
     });
     canvas.addEventListener("pointermove", event => {
         if (!drag || !event.isPrimary) return;
+
         const dx = event.clientX - drag.x;
         const dy = event.clientY - drag.y;
+
         if (!drag.moved && Math.hypot(dx, dy) < 4) return;
-        camera.yaw = drag.yaw + dx * .005;
-        camera.tilt = clamp(drag.tilt + dy * .005, .13, Math.PI / 2);
-        const bounds = canvas.getBoundingClientRect();
-        const projected = project(drag.anchor, cameraFrame(viewport.width, viewport.height));
-        camera.panX += event.clientX - bounds.left - projected.x - drag.offsetX;
-        camera.panY += event.clientY - bounds.top - projected.y - drag.offsetY;
+
+        camera.yaw = drag.yaw - dx * .005;
+        camera.tilt = clamp(
+            drag.tilt + dy * .005,
+            .13,
+            Math.PI / 2
+        );
+
         drag.moved = true;
         dirty = true;
     });
