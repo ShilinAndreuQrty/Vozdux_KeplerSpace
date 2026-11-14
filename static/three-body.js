@@ -215,9 +215,12 @@ function detectEvents() {
 
         $("tb-start").disabled = true;
         $("tb-start").textContent = "Столкновение";
-        $("tb-status").textContent = collision
-            ? "Модель остановлена: обнаружено столкновение"
-            : "Модель остановлена: обнаружен выброс тела";
+        setStatus(
+            collision
+                ? "Модель остановлена: обнаружено столкновение"
+                : "Модель остановлена: обнаружен выброс тела",
+            true
+        );
     }
 }
 
@@ -287,7 +290,7 @@ function reset(){
 
     $("tb-start").disabled = false;
     $("tb-start").textContent = "Запустить";
-    $("tb-status").textContent="Модель остановлена";
+    setStatus("Модель остановлена");
     draw();
 }
 function resetAll(){
