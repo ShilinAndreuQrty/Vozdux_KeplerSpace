@@ -1,5 +1,5 @@
 {% macro source(url, label) -%}
-    <a class="source-arrow" href="{{ url }}" aria-label="{{ label }}" title="{{ label }}"{% if url.startswith('https://') %} target="_blank" rel="noopener noreferrer"{% endif %}>↗</a>
+    <a class="source-link" href="{{ url }}" aria-label="{{ label }}" title="{{ label }}"{% if url.startswith('https://') %} target="_blank" rel="noopener noreferrer"{% endif %}></a>
 {%- endmacro %}
 
 {% macro amount(field, unit='', digits=2) -%}
@@ -25,8 +25,7 @@
 {% macro stat(label, field, unit='', digits=2) %}
     <div>
         <dt>{{ label }}</dt>
-        <dd>{{ amount(field, unit, digits) }} {{ status(field) }}
-            {% if field and field.source and field.source.url %}{{ source(field.source.url, field.source.label) }}{% endif %}</dd>
+        <dd>{{ amount(field, unit, digits) }} {{ status(field) }}</dd>
     </div>
 {% endmacro %}
 
