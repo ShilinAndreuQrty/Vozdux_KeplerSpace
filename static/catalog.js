@@ -39,11 +39,11 @@ function atmosphereStyle(planet, palette) {
         : planet.flux > 0 ? 255 * planet.flux ** .25 : 255;
     const scale = clamp(Math.sqrt((temperature / 255) / (gravity * radius)), .55, 2);
     const gasGiant = planet.giant === "classified";
-    const opacity = planet.atmosphere ?? (gasGiant ? .88 : .57);
+    const opacity = planet.atmosphere ?? (gasGiant ? .83 : .44);
     return {
-        width: clamp(.16 * scale * opacity, .055, .165),
-        opacity: clamp(opacity * (1.1 + .15 * Math.log2(1 + Math.max(0, planet.flux ?? 1))), 0, 1),
-        color: palette[2].map((channel, i) => Math.round(.52 * channel + .48 * [155, 211, 255][i])),
+        width: clamp(.11 * scale * (opacity || .36), .034, .14),
+        opacity: clamp(opacity * (.9 + .18 * Math.log2(1 + (planet.flux ?? 1))), 0, 1),
+        color: palette[2].map((channel, i) => Math.round(.65 * channel + .35 * [140, 202, 255][i])),
     };
 }
 

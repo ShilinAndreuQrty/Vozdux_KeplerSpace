@@ -60,7 +60,7 @@ export function planetSprite({name, palette, texture = "terrain", atmosphere = 0
     canvas.width = canvas.height = diameter;
     const context = canvas.getContext("2d");
     const image = context.createImageData(diameter, diameter);
-    const radius = diameter * (shell?.opacity ? .426 : .448);
+    const radius = diameter * (shell ? .435 : .448);
     const noise = terrainNoise(seedFor(name));
     const star = texture === "star";
     const banded = texture === "bands";
@@ -78,8 +78,8 @@ export function planetSprite({name, palette, texture = "terrain", atmosphere = 0
                 const r = Math.sqrt(r2);
                 const distance = r - 1;
                 if (distance <= shell.width) {
-                    const lit = clamp((-.63 * x - .5 * y) / r + .50, .12, 1);
-                    const falloff = (1 - distance / shell.width) ** 1.65;
+                    const lit = clamp((-.7 * x - .55 * y) / r + .38, .06, 1);
+                    const falloff = (1 - distance / shell.width) ** 2.4;
                     image.data.set(shell.color, index);
                     image.data[index + 3] = 255 * shell.opacity * lit * falloff;
                 }
