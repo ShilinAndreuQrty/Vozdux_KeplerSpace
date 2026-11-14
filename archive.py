@@ -376,40 +376,63 @@ def orbit_summary(axis, eccentricity, zone):
 
 
 def habitability_heuristic(metrics, zone, orbit, giant):
-    radius = central(metrics["radius"])
-    if radius is None or not 0 < radius < 2.5 or giant or "inner" not in zone:
+    """
+    Учебный индекс перспективности кандидата.
+    Это не вероятность существования жизни и не полный ESI.
+
+    70% — орбитальная совместимость с зоной обитаемости.
+    30% — сходство радиуса с земным.
+    Полнота данных оценивается отдельно.
+    """
+    radius_field = metrics.get("radius")
+    radius = central(radius_field)
+
+    # Для включения в рейтинг необходимы опубликованный радиус
+    # и возможность оценить зону обитаемости.
+    if (
+        radius is None
+        or radius <= 0
+        or radius > 2.5
+        or radius_field["kind"] != "published"
+        or giant
+        or "inner" not in zone
+        or "outer" not in zone
+    ):
         return None
-    distance = orbit["axis"]
-    basis = "axis"
-    if not distance or distance <= 0:
-        luminosity = central(metrics["star_luminosity"])
-        flux = central(metrics["flux"])
-        if not luminosity or not flux or flux <= 0:
-            return None
-        distance = math.sqrt(luminosity / flux)
-        basis = "flux"
 
-    # The zone gets most of the weight. Close passes just outside its edges
-    # retain a small score so that the boundaries of the model aren't absolute.
-    inner, outer = zone["inner"], zone["outer"]
-    fraction = orbit["fraction"]
-    distance_ratio = max(inner / distance, distance / outer, 1)
-    proximity = distance_ratio ** -4
-    zone_points = 56 * fraction + 14 * proximity if fraction is not None else 60 * proximity
+    axis = orbit.get("axis")
+    if axis is None or axis <= 0:
+        return None
 
-    # Radius is an indirect indicator. Do not derive density from M sin(i)
-    # or from a mass–radius relation.
-    size = min(1, max(0, (radius - .35) / .4), (2.5 - radius) / 1.1)
-    mass_field = metrics["mass"]
-    mass = central(mass_field)
-    density = None
-    if mass and mass > 0 and mass_field["kind"] == metrics["radius"]["kind"] == "published":
-        density = 5.514 * mass / radius ** 3
-    density_factor = .85 if density is None else .4 + .6 * min(1, max(0, (density - 1.5) / 2.5))
-    surface_points = 30 * size * density_factor
+    # Если известна форма орбиты, используем долю времени в зоне.
+    fraction = orbit.get("fraction")
+
+    if fraction is not None:
+        orbital_similarity = max(0.0, min(1.0, fraction))
+        basis = "orbit"
+    else:
+        # Если эксцентриситет неизвестен, используем большую полуось.
+        inner = zone["inner"]
+        outer = zone["outer"]
+        distance_ratio = max(inner / axis, axis / outer, 1.0)
+        orbital_similarity = distance_ratio ** -4
+        basis = "axis"
+
+    # Сходство радиуса с земным по компоненте ESI.
+    radius_similarity = esi_component(radius, 1.0, 0.57)
+
+    if radius_similarity is None:
+        return None
+
+    orbit_points = 70 * orbital_similarity
+    radius_points = 30 * radius_similarity
+
     return {
-        "score": zone_points + surface_points, "zone": zone_points, "surface": surface_points,
-        "basis": "orbit" if fraction is not None else basis, "density": density,
+        "score": orbit_points + radius_points,
+        "zone": orbit_points,
+        "surface": radius_points,
+        "basis": basis,
+        "density": None,
     }
 
 
@@ -504,9 +527,10 @@ def build_catalog(rows, fetched_at):
             ranking.append((name, host, index["score"]))
 
         # Все данные сохраняются вместе с конкретной планетой.
-        systems[host].append(
-            (row, metrics, similarity, physical, confidence, zone, orbit, giant, index)
-        )
+        systems[host].append((
+            row, metrics, similarity, zone, orbit, giant, index,
+            physical, confidence
+        ))
 
     def rank_key(entry):
         return -entry[2], entry[0].casefold()
