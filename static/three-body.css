@@ -62,3 +62,33 @@
         animation: none;
     }
 }
+/* Более широкий статус-бар */
+.tb-head > #tb-status {
+    min-width: 300px;
+    max-width: 460px;
+    white-space: normal;
+    text-align: center;
+    line-height: 1.4;
+    border-radius: 14px;
+}
+
+/* Кнопки применения и отмены рядом */
+.tb-editor-actions {
+    display: grid;
+    grid-template-columns: 1.5fr 1fr;
+    gap: 8px;
+}
+
+.tb-editor-actions button {
+    width: 100%;
+    min-width: 0;
+    margin-top: 8px;
+}
+
+@media (max-width: 850px) {
+    .tb-head > #tb-status {
+        min-width: 0;
+        max-width: none;
+        width: 100%;
+    }
+}

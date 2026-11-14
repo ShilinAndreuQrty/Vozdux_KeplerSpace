@@ -32,6 +32,19 @@ function markCustom(){
 }
 const clamp=(x,a,b)=>Math.max(a,Math.min(b,x)),fmt=(x,n=3)=>Number(x).toFixed(n).replace(".",",");
 function setStatus(message, alert = false) {const status = $("tb-status");status.textContent = message;status.classList.toggle("is-alert", alert);}
+function hasPendingChanges() {
+    return Object.keys(DIRTY).length > 0;
+}
+
+function updateStartControl() {
+    const eventStop = EVENTS.some(
+        e => e.type === "collision" || e.type === "ejection"
+    );
+
+    $("tb-start").disabled = hasPendingChanges() || eventStop;
+}
+
+function markPendingChange() {if (sel < 0) return;DIRTY[sel] = true;if (run) {run = false;acc = 0;$("tb-start").textContent = "Продолжить";}updateStartControl();setStatus("Есть несохранённые изменения. Примени их или нажми «Отмена».");}
 function setV(b,v,a){ let q=a*Math.PI/180; let w=v*KM_S_TO_AU_DAY; b.vx=w*Math.cos(q); b.vy=w*Math.sin(q); };
 const vel=b=>Math.hypot(b.vx,b.vy)/KM_S_TO_AU_DAY;
 function randomChaos(){
@@ -289,7 +302,7 @@ function reset(){
     clearEvents();
 
     $("tb-start").disabled = false;
-    $("tb-start").textContent = "Запустить";
+    updateStartControl();
     setStatus("Модель остановлена");
     draw();
 }
@@ -312,6 +325,7 @@ function clearSelection(){
 
     delete DRAFT[old];
     delete DIRTY[old];
+    updateStartControl();
 
     sel=-1;
     drag=-1;
@@ -327,7 +341,7 @@ function clearSelection(){
 function read(){return{m:+$("tb-mass").value,x:+$("tb-x").value,y:+$("tb-y").value,v:+$("tb-vel").value,a:+$("tb-angle").value}}
 function applyMass(all){let m=+$("tb-mass").value;if(!Number.isFinite(m)||m<=0||m>1000){alert("Масса должна быть больше нуля и не превышать 1000 масс Солнца.");return}markCustom();B.forEach((b,i)=>{if(all||i===sel)b.m=m});$("tb-status").textContent=all?"Масса применена ко всем телам":"Масса применена к телу";reset();editor()}
 function applyVelocity(all){let p=read();if(![p.v,p.a].every(Number.isFinite)||p.v<0||p.v>10000||Math.abs(p.a)>360){alert("Проверь скорость и угол вектора.");return}markCustom();B.forEach((b,i)=>{if(all||i===sel){let d=all?b:draftFor(i);setV(d,p.v,p.a);if(all){b.vx=d.vx;b.vy=d.vy;delete DRAFT[i]}}});if(!all){let d=draftFor(sel);setV(d,p.v,p.a)}$("tb-status").textContent=all?"Скорость применена ко всем телам":"Скорость применена к телу";reset();editor()}
-function updateDraftFromInputs(){if(sel<0)return;let v=+$("tb-vel").value,a=+$("tb-angle").value;if(!Number.isFinite(v)||!Number.isFinite(a))return;setV(draftFor(sel),v,a);DIRTY[sel]=true;markCustom();$("tb-vel-out").textContent=fmt(v);$("tb-vel-range").value=clamp(v,0,100);draw()}
+function updateDraftFromInputs(){if(sel<0)return;let v=+$("tb-vel").value,a=+$("tb-angle").value;if(!Number.isFinite(v)||!Number.isFinite(a))return;setV(draftFor(sel),v,a);markPendingChange();markCustom();$("tb-vel-out").textContent=fmt(v);$("tb-vel-range").value=clamp(v,0,100);draw()}
 c.addEventListener("pointerdown",e=>{let r=c.getBoundingClientRect(),p={x:e.clientX-r.left,y:e.clientY-r.top};
     if(sel>=0){
         let b=B[sel],d=draftFor(sel),q=scr(b),
@@ -347,6 +361,7 @@ c.addEventListener("pointerdown",e=>{let r=c.getBoundingClientRect(),p={x:e.clie
             const hadChanges=!!DIRTY[sel];
             delete DRAFT[sel];
             delete DIRTY[sel];
+            updateStartControl();
             if(hadChanges){
             $("tb-status").textContent="Неподтверждённые изменения отменены";
             }
@@ -386,7 +401,7 @@ c.addEventListener("pointermove",e=>{
         a=Math.atan2(dy,dx)*180/Math.PI;
 
     setV(d,v,a);
-    DIRTY[sel]=true;
+    markPendingChange();
     markCustom();
     editor();
     draw();
@@ -419,16 +434,19 @@ function end(){
     vectorDrag=false;
 }
 c.addEventListener("pointerup",end);c.addEventListener("pointercancel",end);
-$("tb-mass").oninput=()=>{$("tb-mass-range").value=clamp(+$("tb-mass").value||.0001,.0001,10);$("tb-mass-out").textContent=fmt(+$("tb-mass").value||0,5)};
-$("tb-mass-range").oninput=e=>{$("tb-mass").value=e.target.value;$("tb-mass-out").textContent=fmt(+e.target.value,5)};
+$("tb-mass").oninput = () => {$("tb-mass-range").value = clamp(+$("tb-mass").value || .0001, .0001, 10);$("tb-mass-out").textContent = fmt(+$("tb-mass").value || 0, 5);markPendingChange();};
+$("tb-mass-range").oninput = e => {$("tb-mass").value = e.target.value;$("tb-mass-out").textContent = fmt(+e.target.value, 5);markPendingChange();};
+$("tb-x").oninput = markPendingChange;
+$("tb-y").oninput = markPendingChange;
 $("tb-vel").oninput=updateDraftFromInputs;
 $("tb-vel-range").oninput=e=>{$("tb-vel").value=e.target.value;updateDraftFromInputs()};
 $("tb-angle").oninput=updateDraftFromInputs;
 $("tb-apply").onclick=()=>{let p=read();if(![p.m,p.x,p.y].every(Number.isFinite)||p.m<=0||p.m>1000||Math.abs(p.x)>10000||Math.abs(p.y)>10000){alert("Проверь массу и координаты.");return}markCustom();B[sel].m=p.m;B[sel].x=p.x;B[sel].y=p.y;let d=draftFor(sel);B[sel].vx=d.vx;B[sel].vy=d.vy;delete DRAFT[sel];delete DIRTY[sel];$("tb-status").textContent="Параметры тела применены";reset();editor()};
+$("tb-cancel").onclick = () => {if (sel < 0) return;delete DRAFT[sel];delete DIRTY[sel];editor();updateStartControl();setStatus("Несохранённые изменения отменены");};
 $("tb-reset-selected").onclick=resetSelected;
 $("tb-mass-all").onclick=()=>applyMass(true);$("tb-velocity-all").onclick=()=>applyVelocity(true);
 $("tb-preset").onchange=e=>preset(e.target.value);
-$("tb-start").onclick = () => {if (Object.keys(DIRTY).length) {$("tb-status").textContent ="Сначала примени или сбрось изменённый черновой вектор";return;}run = !run;$("tb-start").textContent = run? "Остановить": "Продолжить";$("tb-status").textContent = run? "Симуляция выполняется": "Симуляция остановлена";};
+$("tb-start").onclick = () => {if (hasPendingChanges()) {setStatus("Сначала примени параметры или нажми «Отмена».");return;}run = !run;$("tb-start").textContent = run? "Остановить": "Продолжить";setStatus(run ? "Симуляция выполняется" : "Симуляция остановлена");};
 $("tb-reset").onclick=resetAll;$("tb-speed").oninput=e=>{speed=+e.target.value;$("tb-speed-out").textContent=speed+"×"};
 function frame(n) {
     if (!last) last = n;

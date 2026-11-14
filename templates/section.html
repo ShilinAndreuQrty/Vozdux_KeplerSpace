@@ -34,7 +34,10 @@
 <label class="tb-field">Скорость, км/с <output id="tb-vel-out">0</output><input id="tb-vel-range" type="range" min="0" max="100" step=".1"><input id="tb-vel" type="number" min="0" max="10000" step=".01"></label>
 <label class="tb-field">Угол от оси X, °<input id="tb-angle" type="number" min="-360" max="360" step="1"></label>
 <p class="tb-note">Угол отсчитывается против часовой стрелки от положительного направления X.</p>
-<button class="button button--primary" id="tb-apply">Применить параметры к телу</button>
+<div class="tb-editor-actions">
+    <button class="button button--primary" id="tb-apply">Применить параметры к телу</button>
+    <button class="button" id="tb-cancel">Отмена</button>
+</div>
 <button class="button" id="tb-reset-selected">Сбросить настройки тела</button>
 <div class="tb-apply-all"><button class="button" id="tb-mass-all">Применить массу ко всем</button><button class="button" id="tb-velocity-all">Применить скорость ко всем</button></div>
 </div>
