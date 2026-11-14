@@ -23,7 +23,7 @@ BUNDLED = DATA_DIR / "catalog.json"
 LOCAL = DATA_DIR / "catalog.local.json"
 EXAMPLE = "55 Cnc e"
 TOP_COUNT = 50
-CATALOG_VERSION = 2
+CATALOG_VERSION = 3
 LIGHT_YEARS_PER_PC = 3.26156
 
 FIELDS = {
@@ -174,37 +174,172 @@ def estimate(value, label, url):
     }
 
 
-def earth_similarity(radius, flux):
-    radius_delta = abs(radius - 1) / (radius + 1)
-    flux_delta = abs(flux - 1) / (flux + 1)
+def esi_component(value, reference_value, weight):
+    if value is None or reference_value <= 0 or value <= 0:
+        return None
+
+    similarity = 1 - abs(value - reference_value) / (value + reference_value)
+    return similarity ** weight
+
+
+def earth_similarity(radius, density, escape_velocity, surface_temperature=None):
+    # Веса Schulze-Makuch et al. (2011)
+    radius_esi = esi_component(radius, 1.0, 0.57)
+    density_esi = esi_component(density, 5.514, 1.07)
+    escape_esi = esi_component(escape_velocity, 11.186, 0.70)
+    temperature_esi = esi_component(surface_temperature, 288.0, 5.58)
+
+    interior = None
+    if radius_esi is not None and density_esi is not None:
+        interior = (radius_esi * density_esi) ** (1 / (0.57 + 1.07))
+
+    surface = None
+    if escape_esi is not None and temperature_esi is not None:
+        surface = (escape_esi * temperature_esi) ** (1 / (0.70 + 5.58))
+
+    # Полный ESI требует обеих групп параметров.
+    score = (
+        math.sqrt(interior * surface)
+        if interior is not None and surface is not None
+        else None
+    )
+
     return {
-        "score": 1 - math.hypot(radius_delta, flux_delta) / math.sqrt(2),
-        "radius_similarity": 1 - radius_delta,
-        "flux_similarity": 1 - flux_delta,
+        "score": score,
+        "interior": interior,
+        "surface": surface,
+        "complete": score is not None,
     }
 
+def physical_properties(metrics):
+    radius_field = metrics["radius"]
+    mass_field = metrics["mass"]
 
-def habitable_zone(temperature, luminosity, circumbinary=False, spectral_type="", gravity=None):
+    radius = central(radius_field)
+    mass = central(mass_field)
+
+    reliable_mass = (
+        mass is not None
+        and mass > 0
+        and mass_field["kind"] == "published"
+    )
+    reliable_radius = (
+        radius is not None
+        and radius > 0
+        and radius_field["kind"] == "published"
+    )
+
+    density = None
+    escape_velocity = None
+
+    if reliable_mass and reliable_radius:
+        density = 5.514 * mass / radius ** 3
+        escape_velocity = 11.186 * math.sqrt(mass / radius)
+
+    return {
+        "radius": radius,
+        "mass": mass,
+        "density": density,
+        "escape_velocity": escape_velocity,
+        "density_available": density is not None,
+        "escape_velocity_available": escape_velocity is not None,
+    }
+
+def data_confidence(metrics):
+    fields = (
+        "radius", "mass", "axis", "eccentricity",
+        "period", "flux", "star_temperature", "star_luminosity",
+    )
+
+    available = [
+        metrics[key]
+        for key in fields
+        if metrics.get(key) is not None
+    ]
+
+    published = sum(
+        field["kind"] == "published"
+        for field in available
+    )
+
+    estimated = sum(
+        field["kind"] in {"model", "archive_estimate", "assumption"}
+        for field in available
+    )
+
+    return {
+        "available": len(available),
+        "total": len(fields),
+        "published": published,
+        "estimated": estimated,
+        "missing": len(fields) - len(available),
+        "completeness": len(available) / len(fields),
+    }
+
+def habitable_zone(
+    temperature,
+    luminosity,
+    circumbinary=False,
+    spectral_type="",
+    gravity=None,
+):
     if circumbinary:
-        return {"reason": "Для орбиты вокруг двух звёзд нужна модель с учётом обеих звёзд."}
-    if (gravity is not None and gravity < 3.6) or re.search(r"(?<![A-Z])(?:III|IV|II|I[ab]?)\b", spectral_type or ""):
+        return {"reason": "Для системы двух звёзд нужна отдельная модель."}
+
+    if (gravity is not None and gravity < 3.6) or re.search(
+        r"(?<![A-Z])(?:III|IV|II|I[ab]?)\b",
+        spectral_type or "",
+    ):
         return {"reason": "Модель рассчитана для звёзд главной последовательности."}
-    if temperature is None or luminosity is None or luminosity <= 0:
-        return {"reason": "Для расчёта нужны температура и светимость звезды."}
+
+    if (
+        temperature is None
+        or luminosity is None
+        or not math.isfinite(temperature)
+        or not math.isfinite(luminosity)
+        or luminosity <= 0
+    ):
+        return {"reason": "Недостаточно данных о звезде."}
+
     if not 2000 <= temperature <= 7200:
         return {"reason": "Температура звезды за пределами модели (2 000–7 200 К)."}
 
-    # Haqq-Misra, Wolf & Kopparapu (2026), ExoColumn, Table 1.
+    # Haqq-Misra, Wolf & Kopparapu (2026), ExoColumn.
     offset = temperature - 5780
-    coefficients = (
-        (1.0684, 9.1544e-5, 1.6309e-8, 1.7962e-12, 1.2497e-16),
-        (0.3851, 7.1906e-5, 3.2723e-9, -3.2530e-12, -5.4811e-16),
-    )
-    distances = [
-        math.sqrt(luminosity / sum(coefficient * offset ** power for power, coefficient in enumerate(edge)))
-        for edge in coefficients
-    ]
-    return {"inner": distances[0], "outer": distances[1]}
+
+    coefficients = {
+        "runaway": (
+            1.0684, 9.1544e-5, 1.6309e-8,
+            1.7962e-12, 1.2497e-16,
+        ),
+        "moist_greenhouse": (
+            1.0636, 8.7628e-5, 5.7056e-9,
+            -3.2355e-12, -5.3193e-16,
+        ),
+        "maximum_greenhouse": (
+            0.3851, 7.1906e-5, 3.2723e-9,
+            -3.2530e-12, -5.4811e-16,
+        ),
+    }
+
+    boundaries = {}
+
+    for name, values in coefficients.items():
+        effective_flux = sum(
+            coefficient * offset ** power
+            for power, coefficient in enumerate(values)
+        )
+
+        if effective_flux <= 0 or not math.isfinite(effective_flux):
+            return {"reason": "Модель не дала физически допустимую границу."}
+
+        boundaries[name] = math.sqrt(luminosity / effective_flux)
+
+    return {
+        **boundaries,
+        "inner": boundaries["moist_greenhouse"],
+        "outer": boundaries["maximum_greenhouse"],
+    }
 
 
 def orbit_summary(axis, eccentricity, zone):
@@ -235,7 +370,7 @@ def orbit_summary(axis, eccentricity, zone):
     return result
 
 
-def habitability(metrics, zone, orbit, giant):
+def habitability_heuristic(metrics, zone, orbit, giant):
     radius = central(metrics["radius"])
     if radius is None or not 0 < radius < 2.5 or giant or "inner" not in zone:
         return None
@@ -323,8 +458,18 @@ def build_catalog(rows, fetched_at):
         if row["pl_controv_flag"] == "1" or not row["pl_name"] or not row["hostname"]:
             continue
         metrics = planet_metrics(row)
-        radius, flux = (central(metrics[key]) for key in ("radius", "flux"))
-        similarity = earth_similarity(radius, flux) if radius and radius > 0 and flux and flux > 0 else None
+
+        physical = physical_properties(metrics)
+        confidence = data_confidence(metrics)
+
+        similarity = earth_similarity(
+            physical["radius"],
+            physical["density"],
+            physical["escape_velocity"],
+            surface_temperature=None,
+        )
+
+        confidence = data_confidence(metrics)
         name, host = row["pl_name"], row["hostname"]
         if similarity:
             previous_ranking.append((name, host, similarity["score"]))
@@ -339,7 +484,7 @@ def build_catalog(rows, fetched_at):
         axis = None if circumbinary else central(metrics["axis"])
         orbit = orbit_summary(axis, measured_e, zone)
         giant = giant_kind(row, metrics)
-        index = habitability(metrics, zone, orbit, giant)
+        index = habitability_heuristic(metrics, zone, orbit, giant)
         if index:
             ranking.append((name, host, index["score"]))
         systems[host].append((row, metrics, similarity, zone, orbit, giant, index))
@@ -372,6 +517,9 @@ def build_catalog(rows, fetched_at):
                 "spectral_source": reference(row["st_spectype_reflink"]),
                 "stars": int(row["sy_snum"] or 0),
                 "spectra": sum(int(row[column] or 0) for column in ("pl_ntranspec", "pl_nespec", "pl_ndispec")),
+                "esi": similarity,
+                "physical": physical,
+                "data_confidence": confidence,
             }
     if len(top) != TOP_COUNT:
         raise ValueError("В выгрузке недостаточно данных для топ-50.")
