@@ -223,13 +223,20 @@ def metric(row, field):
             if kind == "archive_estimate"
             else "model"
         )
-
+   
     elif field == "mass" and kind == "published":
-        provenance = (row.get("pl_bmassprov") or "").casefold()
+        provenance = row.get("pl_bmassprov") or ""
+        normalized_provenance = "".join(
+            char for char in provenance.casefold()
+            if char.isalnum()
+        )
 
-        if provenance in {"msini", "m*sini"}:
+        if normalized_provenance == "msini":
             kind = "minimum"
-        elif "sin(i)" in provenance or provenance == "m-r relationship":
+        elif (
+            "sin(i)" in provenance.casefold()
+            or normalized_provenance == "mrrelationship"
+        ):
             kind = "model"
 
     elif field == "eccentricity" and value == 0:
@@ -395,11 +402,12 @@ def uncertainty_range(metrics):
         plus = field.get("plus")
         minus = field.get("minus")
 
-        if plus is not None and plus >= 0:
-            values.append(field["value"] + plus)
+        if plus is not None:
+            values.append(field["value"] + abs(plus))
 
-        if minus is not None and minus >= 0:
-            values.append(max(0, field["value"] - minus))
+        if minus is not None:
+            values.append(max(0, field["value"] - abs(minus)))
+
 
     scores = []
 
