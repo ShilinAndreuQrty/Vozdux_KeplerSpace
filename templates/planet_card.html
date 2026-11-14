@@ -82,35 +82,81 @@
             Индекс предназначен только для предварительной сортировки целей.
             </p>
         </section>
+        
         <section class="data-panel glass" aria-labelledby="esi-title">
             <header class="data-heading">
                 <div>
-                    <h3 id="esi-title">Сходство с Землёй · ESI</h3>
-                    <p>Earth Similarity Index по Schulze-Makuch et al. (2011).</p>
+                    <h3 id="esi-title">Сходство с Землёй · ESI-3</h3>
+                    <p>
+                        Экспериментальный индекс проекта по радиусу,
+                        средней плотности и второй космической скорости.
+                    </p>
                 </div>
+                {{ source('#esi-method', 'Методика расчёта ESI-3') }}
             </header>
 
             {% if planet.esi.complete %}
-                <p><strong>{{ planet.esi.score|number(3) }}</strong> · полный ESI</p>
-            {% else %}
-                <p><strong>Полный ESI не рассчитан</strong></p>
+                <p>
+                    <strong>{{ (planet.esi.score * 100)|number(1) }}</strong>
+                    <small>из 100</small>
+                </p>
                 <p class="data-note">
-                    Для полного расчёта необходимы все четыре параметра,
-                    включая температуру поверхности. Равновесная температура
-                    из каталога NASA не заменяет её.
+                    ESI-3 — геометрическое среднее трёх коэффициентов
+                    сходства. Чем ближе значение к 100, тем ближе
+                    рассчитанные параметры к земным.
+                </p>
+            {% else %}
+                <p><strong>ESI-3 не рассчитан</strong></p>
+                <p class="data-note">
+                    Для расчёта необходимы опубликованные значения
+                    массы и радиуса планеты. Если одного из них нет
+                    или значение является только минимальной массой
+                    либо модельной оценкой, полный индекс не выводится.
                 </p>
             {% endif %}
 
             <dl class="system-facts">
                 <div>
-                    <dt>Радиусная составляющая</dt>
-                    <dd>{{ planet.esi.interior|number(3) if planet.esi.interior is not none else "Нет данных" }}</dd>
+                    <dt>Сходство радиуса</dt>
+                    <dd>
+                        {{ planet.esi.components.radius|number(3)
+                        if planet.esi.components.radius is not none
+                        else "Нет данных" }}
+                    </dd>
                 </div>
                 <div>
-                    <dt>Поверхностная составляющая</dt>
-                    <dd>{{ planet.esi.surface|number(3) if planet.esi.surface is not none else "Нет данных" }}</dd>
+                    <dt>Сходство плотности</dt>
+                    <dd>
+                        {{ planet.esi.components.density|number(3)
+                        if planet.esi.components.density is not none
+                        else "Нет данных" }}
+                    </dd>
+                </div>
+                <div>
+                    <dt>Сходство второй космической скорости</dt>
+                    <dd>
+                        {{ planet.esi.components.escape_velocity|number(3)
+                        if planet.esi.components.escape_velocity is not none
+                        else "Нет данных" }}
+                    </dd>
                 </div>
             </dl>
+
+            {% if planet.esi_uncertainty %}
+                <p class="data-note">
+                    Диапазон чувствительности к опубликованным погрешностям:
+                    {{ (planet.esi_uncertainty.minimum * 100)|number(1) }}
+                    – {{ (planet.esi_uncertainty.maximum * 100)|number(1) }}
+                    из 100.
+                    Это не доверительный интервал.
+                </p>
+            {% endif %}
+
+            <p class="data-note">
+                ESI-3 не является вероятностью обитаемости.
+                Равновесная температура не подменяет температуру поверхности
+                и в этот индекс не входит. Зона обитаемости оценивается отдельно.
+            </p>
         </section>
         <section class="data-panel glass" aria-labelledby="physical-title">
             <header class="data-heading">
