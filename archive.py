@@ -392,21 +392,22 @@ def uncertainty_range(metrics):
     ):
         return None
 
-    radius_values = [radius]
-    mass_values = [mass]
+    for field in (radius_field, mass_field):
+        if field.get("plus") is None or field.get("minus") is None:
+            return None
 
-    for field, values in (
-        (radius_field, radius_values),
-        (mass_field, mass_values),
-    ):
-        plus = field.get("plus")
-        minus = field.get("minus")
+    radius_values = [
+        radius,
+        radius + abs(radius_field["plus"]),
+        max(0, radius - abs(radius_field["minus"])),
+    ]
+    mass_values = [
+        mass,
+        mass + abs(mass_field["plus"]),
+        max(0, mass - abs(mass_field["minus"])),
+    ]
 
-        if plus is not None:
-            values.append(field["value"] + abs(plus))
-
-        if minus is not None:
-            values.append(max(0, field["value"] - abs(minus)))
+    scores = []
 
 
     scores = []
