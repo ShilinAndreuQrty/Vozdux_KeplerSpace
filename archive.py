@@ -197,9 +197,14 @@ def earth_similarity(radius, density, escape_velocity, surface_temperature=None)
     if escape_esi is not None and temperature_esi is not None:
         surface = (escape_esi * temperature_esi) ** (1 / (0.70 + 5.58))
 
-    # Полный ESI требует обеих групп параметров.
+    # Объединяем группы с учётом суммы весов их компонентов.
+    interior_weight = 0.57 + 1.07
+    surface_weight = 0.70 + 5.58
+    total_weight = interior_weight + surface_weight
+
     score = (
-        math.sqrt(interior * surface)
+        interior ** (interior_weight / total_weight)
+        * surface ** (surface_weight / total_weight)
         if interior is not None and surface is not None
         else None
     )
@@ -446,6 +451,7 @@ def planet_metrics(row):
     return metrics
 
 
+
 def build_catalog(rows, fetched_at):
     if len(rows) < 1000 or len({row.get("pl_name") for row in rows}) != len(rows):
         raise ValueError("NASA вернула неполную таблицу или повторяющиеся записи.")
@@ -453,12 +459,13 @@ def build_catalog(rows, fetched_at):
         raise ValueError("Структура таблицы NASA изменилась.")
 
     systems = defaultdict(list)
-    ranking, previous_ranking = [], []
+    ranking = []
+
     for row in rows:
         if row["pl_controv_flag"] == "1" or not row["pl_name"] or not row["hostname"]:
             continue
-        metrics = planet_metrics(row)
 
+        metrics = planet_metrics(row)
         physical = physical_properties(metrics)
         confidence = data_confidence(metrics)
 
@@ -469,65 +476,103 @@ def build_catalog(rows, fetched_at):
             surface_temperature=None,
         )
 
-        confidence = data_confidence(metrics)
         name, host = row["pl_name"], row["hostname"]
-        if similarity:
-            previous_ranking.append((name, host, similarity["score"]))
         spectral_type = row["st_spectype"] or None
         circumbinary = row["cb_flag"] == "1"
+
         zone = habitable_zone(
-            central(metrics["star_temperature"]), central(metrics["star_luminosity"]),
-            circumbinary, spectral_type, number(row, "st_logg"),
+            central(metrics["star_temperature"]),
+            central(metrics["star_luminosity"]),
+            circumbinary,
+            spectral_type,
+            number(row, "st_logg"),
         )
+
         eccentricity = metrics["eccentricity"]
-        measured_e = central(eccentricity) if eccentricity and eccentricity["kind"] != "assumption" else None
+        measured_e = (
+            central(eccentricity)
+            if eccentricity and eccentricity["kind"] != "assumption"
+            else None
+        )
+
         axis = None if circumbinary else central(metrics["axis"])
         orbit = orbit_summary(axis, measured_e, zone)
         giant = giant_kind(row, metrics)
         index = habitability_heuristic(metrics, zone, orbit, giant)
+
         if index:
             ranking.append((name, host, index["score"]))
-        systems[host].append((row, metrics, similarity, zone, orbit, giant, index))
+
+        # Все данные сохраняются вместе с конкретной планетой.
+        systems[host].append(
+            (row, metrics, similarity, physical, confidence, zone, orbit, giant, index)
+        )
 
     def rank_key(entry):
         return -entry[2], entry[0].casefold()
 
     ranking.sort(key=rank_key)
+
     top = [name for name, _, _ in ranking[:TOP_COUNT]]
     ranks = {name: position for position, name in enumerate(top, 1)}
     hosts = {host for _, host, _ in ranking[:TOP_COUNT]}
-    # Keep the systems linked from the previous version of the ESI ranking.
-    hosts.update(host for _, host, _ in sorted(previous_ranking, key=rank_key)[:TOP_COUNT])
+
     if any(item[0]["pl_name"] == EXAMPLE for item in systems["55 Cnc"]):
         hosts.add("55 Cnc")
+
     planets = {}
+
     for host in sorted(hosts):
-        for row, metrics, similarity, zone, orbit, giant, index in systems[host]:
+        for (
+            row, metrics, similarity, physical, confidence,
+            zone, orbit, giant, index
+        ) in systems[host]:
+
             name = row["pl_name"]
             distance = number(row, "sy_dist")
+
             planets[name] = {
-                "name": name, "host": host, "rank": ranks.get(name), "similarity": similarity, "habitability": index,
-                "distance": distance * LIGHT_YEARS_PER_PC if distance is not None else None,
-                "method": DISCOVERY_METHODS.get(row["discoverymethod"], row["discoverymethod"]),
+                "name": name,
+                "host": host,
+                "rank": ranks.get(name),
+                "similarity": similarity,
+                "habitability": index,
+                "distance": (
+                    distance * LIGHT_YEARS_PER_PC
+                    if distance is not None else None
+                ),
+                "method": DISCOVERY_METHODS.get(
+                    row["discoverymethod"],
+                    row["discoverymethod"],
+                ),
                 "year": int(row["disc_year"]) if row["disc_year"] else None,
-                "metrics": metrics, "zone": zone, "giant": giant,
+                "metrics": metrics,
+                "zone": zone,
+                "giant": giant,
                 "orbit": orbit,
                 "circumbinary": row["cb_flag"] == "1",
                 "spectral_type": row["st_spectype"] or None,
                 "spectral_source": reference(row["st_spectype_reflink"]),
                 "stars": int(row["sy_snum"] or 0),
-                "spectra": sum(int(row[column] or 0) for column in ("pl_ntranspec", "pl_nespec", "pl_ndispec")),
+                "spectra": sum(
+                    int(row[column] or 0)
+                    for column in ("pl_ntranspec", "pl_nespec", "pl_ndispec")
+                ),
                 "esi": similarity,
                 "physical": physical,
                 "data_confidence": confidence,
             }
+
     if len(top) != TOP_COUNT:
         raise ValueError("В выгрузке недостаточно данных для топ-50.")
+
     return {
         "version": CATALOG_VERSION,
         "fetched_at": fetched_at.isoformat(timespec="seconds"),
-        "archive_count": len(rows), "eligible_count": len(ranking),
-        "ranking": top, "planets": planets,
+        "archive_count": len(rows),
+        "eligible_count": len(ranking),
+        "ranking": top,
+        "planets": planets,
     }
 
 

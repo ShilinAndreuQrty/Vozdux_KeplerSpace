@@ -45,7 +45,7 @@
             {% if index %}
                 <div class="score-chip glass liquid">
                     <div>
-                        <span class="score-chip__label">Индекс обитаемости</span>
+                        <span class="score-chip__label">Экспериментальный индекс проекта</span>
                         <div><strong>{{ index.score|number(1) }}</strong><small> из 100</small></div>
                     </div>
                     <span class="score-chip__rank">{{ '№ ' ~ planet.rank if planet.rank else 'Вне топ‑50' }}</span>
@@ -73,9 +73,107 @@
                     </div>
                 {% endfor %}
             </div>
-            <p class="data-note">{% if index.density is not none %}Плотность по массе и радиусу — {{ index.density|number(2) }} г/см³.
-                {% else %}Плотность неизвестна. Вклад размера учитывается с понижением.{% endif %}
-                {% if planet.similarity %} ESI для сравнения с Землёй — {{ planet.similarity.score|number(3) }}.{% endif %}</p>
+            <p class="data-note">
+            {% if index.density is not none %}
+                Плотность по массе и радиусу — {{ index.density|number(2) }} г/см³.
+            {% else %}
+                Плотность неизвестна. Вклад размера учитывается с понижением.
+            {% endif %}
+            Индекс предназначен только для предварительной сортировки целей.
+            </p>
+        </section>
+        <section class="data-panel glass" aria-labelledby="esi-title">
+            <header class="data-heading">
+                <div>
+                    <h3 id="esi-title">Сходство с Землёй · ESI</h3>
+                    <p>Earth Similarity Index по Schulze-Makuch et al. (2011).</p>
+                </div>
+            </header>
+
+            {% if planet.esi.complete %}
+                <p><strong>{{ planet.esi.score|number(3) }}</strong> · полный ESI</p>
+            {% else %}
+                <p><strong>Полный ESI не рассчитан</strong></p>
+                <p class="data-note">
+                    Для полного расчёта необходимы все четыре параметра,
+                    включая температуру поверхности. Равновесная температура
+                    из каталога NASA не заменяет её.
+                </p>
+            {% endif %}
+
+            <dl class="system-facts">
+                <div>
+                    <dt>Радиусная составляющая</dt>
+                    <dd>{{ planet.esi.interior|number(3) if planet.esi.interior is not none else "Нет данных" }}</dd>
+                </div>
+                <div>
+                    <dt>Поверхностная составляющая</dt>
+                    <dd>{{ planet.esi.surface|number(3) if planet.esi.surface is not none else "Нет данных" }}</dd>
+                </div>
+            </dl>
+        </section>
+        <section class="data-panel glass" aria-labelledby="physical-title">
+            <header class="data-heading">
+                <div>
+                    <h3 id="physical-title">Физические свойства</h3>
+                    <p>Расчётные параметры на основе опубликованных массы и радиуса.</p>
+                </div>
+            </header>
+
+            <dl class="system-facts">
+                <div>
+                    <dt>Средняя плотность</dt>
+                    <dd>
+                        {{ planet.physical.density|number(2) ~ " г/см³"
+                        if planet.physical.density is not none else "Нет надёжных данных" }}
+                    </dd>
+                </div>
+                <div>
+                    <dt>Вторая космическая скорость</dt>
+                    <dd>
+                        {{ planet.physical.escape_velocity|number(2) ~ " км/с"
+                        if planet.physical.escape_velocity is not none else "Нет надёжных данных" }}
+                    </dd>
+                </div>
+            </dl>
+
+            <p class="data-note">
+                Эти величины рассчитываются только при наличии опубликованных
+                значений массы и радиуса. Минимальная масса и модельные оценки
+                не считаются надёжным основанием для такого расчёта.
+            </p>
+        </section>
+        <section class="data-panel glass" aria-labelledby="confidence-title">
+            <header class="data-heading">
+                <div>
+                    <h3 id="confidence-title">Полнота исходных данных</h3>
+                    <p>Доступность параметров в каталоге NASA.</p>
+                </div>
+            </header>
+
+            <p>
+                <strong>{{ (planet.data_confidence.completeness * 100)|number(0) }}%</strong>
+                параметров доступны
+            </p>
+
+            <dl class="system-facts">
+                <div>
+                    <dt>Опубликованные значения</dt>
+                    <dd>{{ planet.data_confidence.published }}</dd>
+                </div>
+                <div>
+                    <dt>Расчётные и модельные значения</dt>
+                    <dd>{{ planet.data_confidence.estimated }}</dd>
+                </div>
+                <div>
+                    <dt>Отсутствуют</dt>
+                    <dd>{{ planet.data_confidence.missing }}</dd>
+                </div>
+                <div>
+                    <dt>Всего проверяемых параметров</dt>
+                    <dd>{{ planet.data_confidence.total }}</dd>
+                </div>
+            </dl>
         </section>
     {% endif %}
 
@@ -129,8 +227,19 @@
             </figure>
         {% endif %}
         <dl class="orbit-facts">
-            {% if zone.inner is defined %}
-                <div><dt>Границы зоны</dt><dd>{{ zone.inner|number(4) }} – {{ zone.outer|number(4) }} а.е.</dd></div>
+            {% if zone.runaway is defined %}
+                <div>
+                    <dt>Runaway Greenhouse</dt>
+                    <dd>{{ zone.runaway|number(4) }} а.е.</dd>
+                </div>
+                <div>
+                    <dt>Moist Greenhouse</dt>
+                    <dd>{{ zone.moist_greenhouse|number(4) }} а.е.</dd>
+                </div>
+                <div>
+                    <dt>Maximum Greenhouse</dt>
+                    <dd>{{ zone.maximum_greenhouse|number(4) }} а.е.</dd>
+                </div>
             {% endif %}
             {% if orbit.near is not none %}
                 <div><dt>Ближайшая точка</dt><dd>{{ orbit.near|number(4) }} а.е.</dd></div>
