@@ -7,13 +7,20 @@ const G = 2.959122082855911e-4;
 const KM_S_TO_AU_DAY = DAY_S / AU_KM;
 const SQRT_G = Math.sqrt(G);
 const DT = 0.01;
+const COLLISION_DISTANCE = 0.01;
+const EJECTION_DISTANCE = 10;
 const C = ["#8ddcff","#ffc58e","#c7a5ff"];
 const P={
 // Figure-eight: outer bodies are symmetric about the COM; central velocity is -2 times either outer velocity.
 figure8:[[-.97000436,.24308753,.466203685,.43236573,1],[.97000436,-.24308753,.466203685,.43236573,1],[0,0,-.93240737,-.86473146,1]],
 triangle:[[0,0,0,0,1],[1.2,0,0,0,1],[.6,1.0392304845,0,0,1]],
 chaos:[[-1.05,.25,.12,.55,1],[.82,.52,-.28,-.12,1],[.12,-.82,.34,-.18,1]]};
-let B=[],INITIAL=[],DRAFT={},DIRTY={},T=[[],[],[]],sel=-1,run=false,time=0,speed=32,acc=0,last=0,drag=-1,vectorDrag=false, dragPending=false, dragStart=null, dragTimer=null,V={x:0,y:0,s:100}, activePreset="figure8";
+let B=[],INITIAL=[],DRAFT={},DIRTY={},T=[[],[],[]],
+    EVENTS=[],EVENT_KEYS=new Set(),
+    sel=-1,run=false,time=0,speed=8,acc=0,last=0,
+    drag=-1,vectorDrag=false,dragPending=false,
+    dragStart=null,dragTimer=null,
+    V={x:0,y:0,s:100},activePreset="figure8";
 function markCustom(){
     $("tb-preset").value="custom";
 }
@@ -89,14 +96,157 @@ function preset(name){
 function accels(s){return s.map((b,i)=>{let ax=0,ay=0;s.forEach((o,j)=>{if(i===j)return;let x=o.x-b.x,y=o.y-b.y,r2=x*x+y*y;if(r2<1e-12)return;let z=G*o.m/(r2*Math.sqrt(r2));ax+=x*z;ay+=y*z});return{ax,ay}})}
 function deriv(s){let a=accels(s);return s.map((b,i)=>({x:b.vx,y:b.vy,vx:a[i].ax,vy:a[i].ay}))}
 function shift(s,k,f){return s.map((b,i)=>({...b,x:b.x+k[i].x*f,y:b.y+k[i].y*f,vx:b.vx+k[i].vx*f,vy:b.vy+k[i].vy*f}))}
-function step(){let a=deriv(B),b=deriv(shift(B,a,DT/2)),d=deriv(shift(B,b,DT/2)),e=deriv(shift(B,d,DT));B=B.map((p,i)=>({...p,x:p.x+DT/6*(a[i].x+2*b[i].x+2*d[i].x+e[i].x),y:p.y+DT/6*(a[i].y+2*b[i].y+2*d[i].y+e[i].y),vx:p.vx+DT/6*(a[i].vx+2*b[i].vx+2*d[i].vx+e[i].vx),vy:p.vy+DT/6*(a[i].vy+2*b[i].vy+2*d[i].vy+e[i].vy)}));time+=DT;B.forEach((b,i)=>{T[i].push({x:b.x,y:b.y});if(T[i].length>2000)T[i].shift()})}
+
+function addEvent(type, bodies, message) {
+    const key = type + ":" + bodies.slice().sort((a,b)=>a-b).join("-");
+    if (EVENT_KEYS.has(key)) return;
+
+    EVENT_KEYS.add(key);
+    EVENTS.push({ type, bodies, message, time });
+    renderEvents();
+}
+
+function detectEvents() {
+    let collision = false;
+
+    // Проверяем все пары тел на столкновение.
+    for (let i = 0; i < B.length; i++) {
+        for (let j = i + 1; j < B.length; j++) {
+            const dx = B[i].x - B[j].x;
+            const dy = B[i].y - B[j].y;
+
+            if (Math.hypot(dx, dy) <= COLLISION_DISTANCE) {
+                addEvent(
+                    "collision",
+                    [i, j],
+                    "Столкновение тел " + (i + 1) + " и " + (j + 1)
+                );
+                collision = true;
+            }
+        }
+    }
+
+    // Проверяем возможный выброс каждого тела.
+    for (let i = 0; i < B.length; i++) {
+        const pair = [0, 1, 2].filter(j => j !== i);
+        const a = B[pair[0]];
+        const b = B[pair[1]];
+        const body = B[i];
+
+        const mass = a.m + b.m;
+
+        const cx = (a.m*a.x + b.m*b.x) / mass;
+        const cy = (a.m*a.y + b.m*b.y) / mass;
+
+        const cvx = (a.m*a.vx + b.m*b.vx) / mass;
+        const cvy = (a.m*a.vy + b.m*b.vy) / mass;
+
+        const rx = body.x - cx;
+        const ry = body.y - cy;
+        const rvx = body.vx - cvx;
+        const rvy = body.vy - cvy;
+
+        const distance = Math.hypot(rx, ry);
+        const radial = rx*rvx + ry*rvy;
+
+        const specificEnergy =
+            0.5*(rvx*rvx + rvy*rvy)
+            - G*mass/Math.max(distance, 1e-12);
+
+        if (
+            distance >= EJECTION_DISTANCE &&
+            radial > 0 &&
+            specificEnergy > 0
+        ) {
+            addEvent(
+                "ejection",
+                [i],
+                "Возможный выброс тела " + (i + 1)
+                + " — удаление " + fmt(distance, 1) + " а.е."
+            );
+        }
+    }
+
+    // Сначала проверили все события, затем остановили модель.
+    if (collision) {
+        run = false;
+        acc = 0;
+
+        $("tb-start").disabled = false;
+        $("tb-pause").disabled = true;
+        $("tb-pause").textContent = "Пауза";
+        $("tb-status").textContent =
+            "Модель остановлена: обнаружено столкновение";
+    }
+}
+
+function renderEvents() {
+    const panel = $("tb-events");
+    if (!panel) return;
+
+    if (!EVENTS.length) {
+        panel.innerHTML =
+            "<strong>События:</strong> пока не обнаружены";
+        return;
+    }
+
+    panel.innerHTML =
+        "<strong>Обнаруженные события:</strong><ul>" +
+        EVENTS.map(e =>
+            "<li>" + e.message + " — "
+            + fmt(e.time, 2) + " суток</li>"
+        ).join("") +
+        "</ul>";
+}
+
+function clearEvents() {
+    EVENTS = [];
+    EVENT_KEYS.clear();
+    renderEvents();
+}
+
+function step() {
+    let a = deriv(B);
+    let b = deriv(shift(B, a, DT/2));
+    let d = deriv(shift(B, b, DT/2));
+    let e = deriv(shift(B, d, DT));
+
+    B = B.map((p, i) => ({
+        ...p,
+        x: p.x + DT/6*(a[i].x + 2*b[i].x + 2*d[i].x + e[i].x),
+        y: p.y + DT/6*(a[i].y + 2*b[i].y + 2*d[i].y + e[i].y),
+        vx: p.vx + DT/6*(a[i].vx + 2*b[i].vx + 2*d[i].vx + e[i].vx),
+        vy: p.vy + DT/6*(a[i].vy + 2*b[i].vy + 2*d[i].vy + e[i].vy)
+    }));
+
+    time += DT;
+
+    B.forEach((b, i) => {
+        T[i].push({x:b.x, y:b.y});
+        if (T[i].length > 2000) T[i].shift();
+    });
+
+    detectEvents();
+}
 function energy(){let e=0;B.forEach(b=>e+=.5*b.m*(b.vx*b.vx+b.vy*b.vy));for(let i=0;i<3;i++)for(let j=i+1;j<3;j++){let x=B[j].x-B[i].x,y=B[j].y-B[i].y;e-=G*B[i].m*B[j].m/Math.max(Math.sqrt(x*x+y*y),1e-9)}return e}
 function resize(){let r=c.getBoundingClientRect(),d=Math.min(devicePixelRatio||1,2);c.width=r.width*d;c.height=r.height*d;g.setTransform(d,0,0,d,0,0);V.x=r.width/2;V.y=r.height/2;V.s=Math.min(r.width,r.height)/4.67}
 const scr=p=>({x:V.x+p.x*V.s,y:V.y-p.y*V.s}),world=p=>({x:(p.x-V.x)/V.s,y:-(p.y-V.y)/V.s});
 function arrow(ctx,x,y,dx,dy,col){let a=Math.atan2(dy,dx),L=12;ctx.strokeStyle=col;ctx.fillStyle=col;ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x+dx,y+dy);ctx.stroke();ctx.beginPath();ctx.moveTo(x+dx,y+dy);ctx.lineTo(x+dx-L*Math.cos(a-.45),y+dy-L*Math.sin(a-.45));ctx.lineTo(x+dx-L*Math.cos(a+.45),y+dy-L*Math.sin(a+.45));ctx.fill()}
 function grid(w,h){g.save();let st=V.s>190?.25:V.s>80?.5:1,l=-V.x/V.s,r=(w-V.x)/V.s,b=-(h-V.y)/V.s,t=V.y/V.s;g.strokeStyle="#9eb7d522";g.fillStyle="#9eb7d5";g.font="10px sans-serif";for(let x=Math.ceil(l/st)*st;x<=r;x+=st){let px=V.x+x*V.s;g.beginPath();g.moveTo(px,0);g.lineTo(px,h);g.stroke();if(x)g.fillText(String(+x.toFixed(2)),px+3,V.y+12)}for(let y=Math.ceil(b/st)*st;y<=t;y+=st){let py=V.y-y*V.s;g.beginPath();g.moveTo(0,py);g.lineTo(w,py);g.stroke();if(y)g.fillText(String(+y.toFixed(2)),V.x+5,py-3)}g.strokeStyle="#c4d5eb88";g.lineWidth=1.4;g.beginPath();g.moveTo(0,V.y);g.lineTo(w,V.y);g.moveTo(V.x,0);g.lineTo(V.x,h);g.stroke();g.fillStyle="#d3dfef";g.fillText("X, а.е.",w-48,V.y-7);g.fillText("Y, а.е.",V.x+7,13);g.restore()}
 function draw(){let w=c.clientWidth,h=c.clientHeight;g.clearRect(0,0,w,h);grid(w,h);T.forEach((a,i)=>{if(a.length<2)return;g.beginPath();a.forEach((p,j)=>{let q=scr(p);j?g.lineTo(q.x,q.y):g.moveTo(q.x,q.y)});g.strokeStyle=C[i]+"99";g.lineWidth=1.5;g.stroke()});B.forEach((b,i)=>{let p=scr(b),rad=10+Math.min(7,Math.sqrt(b.m)*2);let glow=g.createRadialGradient(p.x,p.y,1,p.x,p.y,rad*3);glow.addColorStop(0,C[i]+"99");glow.addColorStop(1,C[i]+"00");g.fillStyle=glow;g.beginPath();g.arc(p.x,p.y,rad*3,0,7);g.fill();g.fillStyle=C[i];g.beginPath();g.arc(p.x,p.y,rad,0,7);g.fill();g.strokeStyle=sel===i?"white":"#ffffff99";g.lineWidth=sel===i?2.5:1;g.stroke();g.fillStyle="#e4edfa";g.font="11px sans-serif";g.fillText("Тело "+(i+1),p.x+11,p.y-11);let d=(!run&&sel===i&&DIRTY[i]&&DRAFT[i])?DRAFT[i]:b;let a=Math.atan2(d.vy,d.vx),len=clamp(vel(d)*2.0,16,90);arrow(g,p.x,p.y,Math.cos(a)*len,-Math.sin(a)*len,C[i])});$("tb-time").textContent=fmt(time,2)+" суток";}
-function reset(){run=false;time=0;acc=0;T=B.map(b=>[{x:b.x,y:b.y}]);$("tb-start").disabled=false;$("tb-pause").disabled=true;$("tb-pause").textContent="Пауза";$("tb-status").textContent="Модель остановлена";draw()}
+function reset(){
+    run=false;
+    time=0;
+    acc=0;
+    T=B.map(b=>[{x:b.x,y:b.y}]);
+    clearEvents();
+
+    $("tb-start").disabled=false;
+    $("tb-pause").disabled=true;
+    $("tb-pause").textContent="Пауза";
+    $("tb-status").textContent="Модель остановлена";
+    draw();
+}
 function resetAll(){
     B=INITIAL.map(b=>({...b}));
     DRAFT={};

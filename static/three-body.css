@@ -14,3 +14,25 @@
     color: var(--text);
     font-size: .8rem;
 }
+.tb-events {
+    padding: 13px 16px;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    color: var(--muted);
+    background: #0b1426;
+    font-size: .76rem;
+    line-height: 1.6;
+}
+
+.tb-events strong {
+    color: var(--text);
+}
+
+.tb-events ul {
+    margin: 8px 0 0;
+    padding-left: 20px;
+}
+
+.tb-events li {
+    margin-top: 4px;
+}
