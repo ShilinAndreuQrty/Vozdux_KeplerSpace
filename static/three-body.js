@@ -13,7 +13,7 @@ const P={
 figure8:[[-.97000436,.24308753,.466203685,.43236573,1],[.97000436,-.24308753,.466203685,.43236573,1],[0,0,-.93240737,-.86473146,1]],
 triangle:[[0,0,0,0,1],[1.2,0,0,0,1],[.6,1.0392304845,0,0,1]],
 chaos:[[-1.05,.25,.12,.55,1],[.82,.52,-.28,-.12,1],[.12,-.82,.34,-.18,1]]};
-let B=[],INITIAL=[],DRAFT={},DIRTY={},T=[[],[],[]],sel=-1,run=false,time=0,speed=8,acc=0,last=0,drag=-1,vectorDrag=false, dragPending=false, dragStart=null, dragTimer=null,V={x:0,y:0,s:100}, activePreset="figure8";
+let B=[],INITIAL=[],DRAFT={},DIRTY={},T=[[],[],[]],sel=-1,run=false,time=0,speed=32,acc=0,last=0,drag=-1,vectorDrag=false, dragPending=false, dragStart=null, dragTimer=null,V={x:0,y:0,s:100}, activePreset="figure8";
 function markCustom(){
     $("tb-preset").value="custom";
 }
