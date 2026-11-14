@@ -233,10 +233,12 @@ function rotateTo(start, dx, dy) {
     camera.tilt = clamp(start.tilt + dy, -Math.PI / 2, Math.PI / 2);
 }
 
+
 function applyDrag(worldByBody) {
-    const {clientX, clientY, start, anchor, body, offsetX, offsetY} = drag;
+    const {clientX, clientY, start} = drag;
     const dx = clientX - drag.startX;
     const dy = clientY - drag.startY;
+
     if (drag.pan) {
         const {scale} = cameraFrame();
         if (scale) {
@@ -245,18 +247,16 @@ function applyDrag(worldByBody) {
         }
         return;
     }
-    const pivot = worldByBody.get(body?.id) ?? anchor;
+
+    // Всегда вращаем камеру вокруг Солнца.
     rotateTo(start, dx * .006, dy * .006);
-    const frame = cameraFrame();
-    const rect = canvas.getBoundingClientRect();
-    if (!frame.scale) return;
-    // Start with the old pivot and ease into the grabbed point to avoid a jump in perspective.
-    const weight = clamp(Math.hypot(dx, dy) / 54, 0, 1);
-    camera.pivot = pivot.map((value, i) => (1 - weight) * start.pivot[i] + weight * value);
-    const offset = projectOffset(pivot, frame);
-    camera.screenX = (clientX - rect.left - frame.centerX + offsetX) / frame.scale - offset.x;
-    camera.screenY = (clientY - rect.top - frame.centerY + offsetY) / frame.scale - offset.y;
+    camera.pivot = [0, 0, 0];
+
+    // Сохраняем смещение, если пользователь ранее двигал карту.
+    camera.screenX = start.screenX;
+    camera.screenY = start.screenY;
 }
+
 
 function bodyAt(x, y) {
     for (let i = drawPositions.length - 1; i >= 0; i--) {
