@@ -1,0 +1,210 @@
+{% macro source(url, label) -%}
+    <a class="source-arrow" href="{{ url }}" aria-label="{{ label }}" title="{{ label }}">↗</a>
+{%- endmacro %}
+
+{% macro amount(field, unit='', digits=2) -%}
+    {% if field %}
+        {% if field.limit == 1 %}&lt; {% elif field.limit == -1 %}&gt; {% endif -%}
+        {{ field.value|number(digits) }}{% if unit %} <span class="unit">{{ unit }}</span>{% endif %}
+    {% else %}Нет данных{% endif %}
+{%- endmacro %}
+
+{% macro status(field) -%}
+    {% if field %}
+        {% if field.kind in ['archive_estimate', 'model'] %}<small>Оценка</small>
+        {% elif field.kind == 'minimum' %}<small>Минимальная масса</small>
+        {% elif field.kind == 'assumption' %}<small>Принято в модели</small>{% endif %}
+    {% endif %}
+{%- endmacro %}
+
+{% macro stat(label, field, unit='', digits=2) %}
+    <div>
+        <dt>{{ label }}</dt>
+        <dd>{{ amount(field, unit, digits) }} {{ status(field) }}</dd>
+    </div>
+{% endmacro %}
+
+{% set m = planet.metrics %}
+{% set index = planet.habitability %}
+{% set zone = planet.zone %}
+{% set orbit = planet.orbit %}
+<article class="planet-card" aria-labelledby="planet-name" data-selected="{{ planet.name }}">
+    <header class="planet-hero">
+        <canvas class="planet-hero__sky" data-sky aria-hidden="true"></canvas>
+        <figure class="planet-portrait">
+            <canvas id="planet-portrait" role="img" aria-label="Условная визуализация планеты {{ planet.name }}"></canvas>
+            <figcaption>Условная визуализация<span id="portrait-atmosphere" hidden> · модельный ореол</span></figcaption>
+        </figure>
+        <div class="planet-hero__content">
+            <p class="planet-hero__host">Система {{ planet.host }}</p>
+            <h2 id="planet-name" tabindex="-1">{{ planet.name }}</h2>
+            <p class="planet-hero__meta">
+                {{ planet.method }}{% if planet.year %} · {{ planet.year }}{% endif %}
+                {% if planet.distance is not none %} · {{ planet.distance|number(1) }} св. лет{% endif %}
+            </p>
+            {% if index %}
+                <div class="score-chip glass liquid">
+                    <div>
+                        <span class="score-chip__label">Индекс обитаемости</span>
+                        <div><strong>{{ index.score|number(1) }}</strong><small> из 100</small></div>
+                    </div>
+                    <span class="score-chip__rank">{{ '№ ' ~ planet.rank if planet.rank else 'Вне топ‑50' }}</span>
+                </div>
+            {% endif %}
+        </div>
+    </header>
+
+    {% if index %}
+        <section class="data-panel glass" aria-labelledby="score-title">
+            <header class="data-heading">
+                <div><h3 id="score-title">Что повлияло на балл</h3>
+                    <p>{% if index.basis == 'orbit' %}Учтена доля оборота в зоне обитаемости.
+                    {% elif index.basis == 'axis' %}Тепловая оценка основана на большой полуоси.
+                    {% else %}Расстояние до звезды оценено по потоку и светимости.{% endif %}</p></div>
+                {{ source('#habitability-method', 'Методика расчёта индекса') }}
+            </header>
+            <div class="score-bars">
+                {% for label, points, max_points in [
+                    ("Тепловые условия", index.zone, 70), ("Признаки твёрдой поверхности", index.surface, 30)
+                ] %}
+                    <div class="score-bar">
+                        <div><span>{{ label }}</span><strong>{{ points|number(1) }} / {{ max_points }}</strong></div>
+                        <meter min="0" max="{{ max_points }}" value="{{ points }}" aria-label="{{ label }}"></meter>
+                    </div>
+                {% endfor %}
+            </div>
+            <p class="data-note">{% if index.density is not none %}Плотность по массе и радиусу — {{ index.density|number(2) }} г/см³.
+                {% else %}Плотность неизвестна. Вклад размера учитывается с понижением.{% endif %}
+                {% if planet.similarity %} ESI для сравнения с Землёй — {{ planet.similarity.score|number(3) }}.{% endif %}</p>
+        </section>
+    {% endif %}
+
+    <section class="orbit-panel glass" aria-labelledby="orbit-title">
+        <header class="data-heading">
+            <div>
+                <h3 id="orbit-title">Орбита и зона обитаемости</h3>
+                <p>{% if zone.inner is defined %}Диапазон, в котором при подходящей атмосфере на поверхности возможна жидкая вода.
+                    {% else %}{{ zone.reason }}{% endif %}</p>
+            </div>
+            {{ source(hz_model, 'Научная статья о модели ExoColumn') }}
+        </header>
+        {% if zone.inner is defined %}
+            <div class="orbit-result">
+                {% if orbit.fraction is not none %}
+                    {% set percent = orbit.fraction * 100 %}
+                    <strong>{% if 0 < percent < 0.1 %}&lt; 0,1{% elif 99.9 < percent < 100 %}&gt; 99,9{% else %}{{ percent|number(1) }}{% endif %}% оборота в зоне</strong>
+                    <span>Расчёт по модели</span>
+                {% else %}
+                    <strong>Доля оборота неизвестна</strong>
+                    <span>Для расчёта нужны размер и форма орбиты.</span>
+                {% endif %}
+            </div>
+        {% endif %}
+        {% if distances %}
+            <figure class="distance-chart">
+                <figcaption>Расстояние до звезды, а.е.{% if distances.compressed %} · шкала сжата{% endif %}</figcaption>
+                <div class="distance-axis" aria-hidden="true">{% for tick in distances.ticks %}<span>{{ tick|number(3) }}</span>{% endfor %}</div>
+                <ul class="distance-rows">
+                    {% for row in distances.rows %}
+                        {% set sibling = row.planet %}
+                        {% set selected = sibling.name == planet.name %}
+                        {% set path = sibling.orbit %}
+                        <li class="{{ 'is-selected' if selected else '' }} {{ 'is-giant' if sibling.giant else '' }}">
+                            {% if selected %}<strong>{{ sibling.name }}</strong>
+                            {% else %}<a data-planet="{{ sibling.name }}" href="{{ request.url_for('exoplanets').path }}?{{ sibling.name|query }}">{{ sibling.name }}</a>{% endif %}
+                            <div class="distance-track" aria-hidden="true">
+                                {% if distances.zone %}<i class="distance-zone" style="--from:{{ distances.zone[0] }}%;--to:{{ distances.zone[1] }}%"></i>{% endif %}
+                                {% if row.start is not none %}<i class="distance-span" style="--from:{{ row.start }}%;--to:{{ row.end }}%"></i>
+                                {% else %}<i class="distance-dot" style="--from:{{ row.marker }}%"></i>{% endif %}
+                            </div>
+                            <span class="sr-only">{{ 'Ближайшая и дальняя точки: ' ~ (path.near|number(4)) ~ ' – ' ~ (path.far|number(4)) if path.near is not none else 'Большая полуось: ' ~ (path.axis|number(4)) }} а.е.{% if sibling.giant %} · гигант{% endif %}</span>
+                        </li>
+                    {% endfor %}
+                </ul>
+                <div class="distance-key">
+                    {% if distances.zone %}<span class="key-zone">Зона обитаемости</span>{% endif %}
+                    {% if distances.rows %}<span class="key-range">Диапазон орбиты</span><span class="key-dot">Только полуось</span>{% endif %}
+                    {% if siblings|selectattr('giant')|list %}<span class="key-giant">Гиганты</span>{% endif %}
+                </div>
+            </figure>
+        {% endif %}
+        <dl class="orbit-facts">
+            {% if zone.inner is defined %}
+                <div><dt>Границы зоны</dt><dd>{{ zone.inner|number(4) }} – {{ zone.outer|number(4) }} а.е.</dd></div>
+            {% endif %}
+            {% if orbit.near is not none %}
+                <div><dt>Ближайшая точка</dt><dd>{{ orbit.near|number(4) }} а.е.</dd></div>
+                <div><dt>Дальняя точка</dt><dd>{{ orbit.far|number(4) }} а.е.</dd></div>
+            {% elif orbit.axis is not none %}
+                <div><dt>Большая полуось</dt><dd>{{ amount(m.axis, "а.е.", 4) }}</dd></div>
+            {% endif %}
+        </dl>
+    </section>
+
+    <section class="data-panel glass" aria-labelledby="planet-parameters">
+        <header class="data-heading">
+            <h3 id="planet-parameters">Параметры планеты</h3>
+            {{ source(archive_url, 'Параметры и публикации в архиве NASA') }}
+        </header>
+        <dl class="system-facts">
+            {{ stat("Радиус", m.radius, "радиуса Земли") }}
+            {{ stat("Масса", m.mass, "массы Земли") }}
+            {{ stat("Звёздный поток", m.flux, "от земного") }}
+            {{ stat("Период обращения", m.period, "суток") }}
+            {{ stat("Равновесная температура", m.temperature, "К", 0) }}
+            {{ stat("Эксцентриситет орбиты", m.eccentricity, "", 4) }}
+        </dl>
+    </section>
+
+    <section class="data-panel glass" aria-labelledby="system-title">
+        <header class="data-heading">
+            <div><h3 id="system-title">Звезда {{ planet.host }}</h3><p>{{ known_planets }}{% if planet.stars > 1 %} · звёзд в системе {{ planet.stars }}{% endif %}</p></div>
+            {{ source(archive_url, 'Звезда и её система в архиве NASA') }}
+        </header>
+        <dl class="system-facts">
+            <div><dt>Спектральный класс</dt><dd>{{ planet.spectral_type or "Нет данных" }}</dd></div>
+            {{ stat("Температура", m.star_temperature, "К", 0) }}
+            {{ stat("Светимость", m.star_luminosity, "от солнечной", 4) }}
+            {{ stat("Радиус", m.star_radius, "радиуса Солнца") }}
+            {{ stat("Масса", m.star_mass, "массы Солнца") }}
+            {{ stat("Период вращения", m.star_rotation, "суток") }}
+        </dl>
+        <div class="system-notes">
+            <div>
+                <header class="data-heading"><h4>Активность звезды</h4>{% if activity %}{{ source(activity[1], 'Источник наблюдений звезды') }}{% endif %}</header>
+                <p>{{ activity[0] if activity else "В карточке пока нет данных о вспышках." }}</p>
+            </div>
+            <div>
+                <header class="data-heading"><h4>Атмосфера</h4>{% if atmosphere %}{{ source(atmosphere[1], 'Источник наблюдений атмосферы') }}{% elif planet.spectra %}{{ source(archive_url, 'Спектры планеты в архиве NASA') }}{% endif %}</header>
+                {% if atmosphere %}<p>{{ atmosphere[0] }}</p>
+                {% elif planet.spectra %}<p>В архиве есть спектральные наблюдения ({{ planet.spectra }}).</p>
+                {% else %}<p>В архиве пока нет спектров этой планеты.</p>{% endif %}
+            </div>
+        </div>
+        {% if siblings|length > 1 %}
+            <h4 class="neighbors-title">Соседи по системе</h4>
+            <ul class="neighbors">
+                {% for sibling in siblings if sibling.name != planet.name %}
+                    <li><a data-planet="{{ sibling.name }}" href="{{ request.url_for('exoplanets').path }}?{{ sibling.name|query }}">
+                        <strong>{{ sibling.name }}</strong>
+                        {% if sibling.giant %}<small>{{ 'Газовый гигант' if sibling.giant == 'classified' else 'Вероятный гигант' }}</small>{% endif %}
+                    </a></li>
+                {% endfor %}
+            </ul>
+        {% endif %}
+        {% if siblings|selectattr('giant')|list %}
+            <p class="data-note giant-note">Гиганты могут возмущать соседние орбиты. Влияние зависит от массы и формы орбиты.</p>
+        {% endif %}
+    </section>
+    <script type="application/json" id="planet-graphics">
+        {{ {
+            "name": planet.name,
+            "radius": m.radius.value if m.radius and not m.radius.limit else none,
+            "flux": m.flux.value if m.flux and not m.flux.limit else none,
+            "mass": m.mass.value if m.mass and m.mass.kind == 'published' and not m.mass.limit else none,
+            "temperature": m.temperature.value if m.temperature and not m.temperature.limit else none,
+            "atmosphere": atmosphere[2] if atmosphere else none,
+            "giant": planet.giant
+        }|tojson }}
+    </script>
+</article>

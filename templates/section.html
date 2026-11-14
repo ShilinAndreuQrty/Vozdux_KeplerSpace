@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block head %}
+{% if active_slug == "three-body" %}
+<link rel="stylesheet" href="{{ request.url_for('static', path='/three-body02.css').path }}">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module" src="{{ request.url_for('static', path='/three-body02.js').path }}"></script>
+{% else %}<script type="module" src="{{ request.url_for('static', path='/sky.js').path }}"></script>{% endif %}
+{% endblock %}
+{% block content %}
+{% set section = sections[active_slug] %}
+{% if active_slug == "three-body" %}
+<section class="tb-lab">
+    <header class="tb-head">
+        <div>
+            <p class="panel-label">Интерактивная лаборатория</p>
+            <h1>Задача трёх тел</h1>
+            <p class="tb-intro">Настраивай массы, трёхмерные координаты и начальные скорости. Запускай модель и наблюдай гравитационное взаимодействие в пространстве.</p>
+        </div>
+        <span id="tb-status">Модель остановлена</span>
+    </header>
+
+    <div class="tb-layout">
+        <div class="tb-main">
+            <div class="tb-stage">
+                <div id="tb-canvas" role="img" aria-label="Трёхмерная сцена симуляции трёх тел"></div>
+                <div class="tb-legend"><span>● Тело 1</span><span>● Тело 2</span><span>● Тело 3</span></div>
+                <small class="tb-hint">Нажми на тело для редактирования. Перетаскивай тело в пространстве; перетаскивай конец стрелки, чтобы изменить вектор скорости. Вращай сцену мышкой.</small>
+            </div>
+
+            <div class="tb-actions">
+                <button class="button button--primary" id="tb-start">Запустить</button>
+                <button class="button" id="tb-reset">Сбросить</button>
+                <div class="tb-time-inline">Время: <strong id="tb-time">0,00 суток</strong></div>
+                <label>Скорость <input id="tb-speed" type="range" min="4" max="64" step="4" value="32"><output id="tb-speed-out">32×</output></label>
+            </div>
+
+            <div id="tb-events" class="tb-events" aria-live="polite">
+                <strong>События:</strong> пока не обнаружены
+            </div>
+        </div>
+
+        <aside class="tb-editor glass">
+            <p class="panel-label">Панель параметров</p>
+            <h2 id="tb-editor-title">Выбери тело</h2>
+            <p id="tb-help" class="tb-note">Нажми на одно из трёх тел в трёхмерной сцене.</p>
+            <div id="tb-fields" hidden>
+                <h3>Масса</h3>
+                <label class="tb-field">Масса, масс Солнца <output id="tb-mass-out">1,00000</output><input id="tb-mass-range" type="range" min=".0001" max="10" step=".0001"><input id="tb-mass" type="number" min=".0001" max="1000" step=".00001"></label>
+
+                <h3>Начальные координаты</h3>
+                <div class="tb-three-coordinates">
+                    <label class="tb-field">X, а.е.<input id="tb-x" type="number" step=".01"></label>
+                    <label class="tb-field">Y, а.е.<input id="tb-y" type="number" step=".01"></label>
+                    <label class="tb-field">Z, а.е.<input id="tb-z" type="number" step=".01"></label>
+                </div>
+
+                <h3>Вектор скорости</h3>
+                <p class="tb-note">Скорость в плоскости XY задаётся величиной и углом. Компонента Vz задаётся отдельно. Можно также перетащить конец 3D-стрелки.</p>
+                <label class="tb-field">Скорость в XY, км/с <output id="tb-vel-out">0</output><input id="tb-vel-range" type="range" min="0" max="100" step=".1"><input id="tb-vel" type="number" min="0" max="10000" step=".01"></label>
+                <label class="tb-field">Угол в плоскости XY от оси X, °<input id="tb-angle" type="number" min="-360" max="360" step="1"></label>
+                <label class="tb-field">Компонента Vz, км/с<input id="tb-vz" type="number" min="-10000" max="10000" step=".01"></label>
+                <p class="tb-note">Положительный угол отсчитывается против часовой стрелки от положительного направления X. Положительная Vz направлена вдоль +Z.</p>
+
+                <div class="tb-editor-actions">
+                    <button class="button button--primary" id="tb-apply">Применить параметры к телу</button>
+                    <button class="button" id="tb-cancel">Отмена</button>
+                </div>
+                <button class="button" id="tb-reset-selected">Сбросить настройки тела</button>
+                <div class="tb-apply-all"><button class="button" id="tb-mass-all">Применить массу ко всем</button><button class="button" id="tb-velocity-all">Применить скорость ко всем</button></div>
+            </div>
+
+            <div class="tb-presets">
+                <h3>Начальная конфигурация</h3>
+                <select id="tb-preset">
+                    <option value="custom" disabled>Пользовательский</option>
+                    <option value="figure8">Периодическая «восьмёрка»</option>
+                    <option value="triangle">Треугольник Лагранжа</option>
+                    <option value="chaos">Неустойчивая конфигурация</option>
+                </select>
+                <p class="tb-note">Смена сценария сбрасывает параметры всех тел. Движение рассчитывается по закону всемирного тяготения Ньютона: ускорение каждого тела — сумма трёхмерных гравитационных ускорений от двух остальных. Для треугольника Лагранжа используется равносторонняя конфигурация трёх равных масс в плоскости XY (Z = 0), вращающаяся вокруг неподвижного центра масс. Для «восьмёрки» все тела также начинают движение в плоскости Z = 0.</p>
+            </div>
+        </aside>
+    </div>
+
+    <p class="tb-note">Учебная трёхмерная ньютоновская модель. Масса — в массах Солнца, координаты — в а.е., компоненты скорости — в км/с, время — в сутках. В пресетах «восьмёрка» и «треугольник» начальные условия плоские; сценарий хаоса использует все три пространственные координаты. При очень близком сближении тел погрешность фиксированного шага интегрирования может возрастать.</p>
+</section>
+{% else %}
+<section class="section-panel" aria-labelledby="section-title"><canvas class="section-panel__sky" data-sky aria-hidden="true"></canvas><div class="section-panel__content glass"><p class="panel-label">{{ 'В будущем' if section.future else 'В разработке' }}</p><h1 id="section-title">{{ section.title }}</h1><p class="section-panel__description">{{ section.description }}</p><a class="button" href="{{ request.url_for('home').path }}">← К Солнечной системе</a></div></section>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+
+{% block body_class %}catalog-page{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="{{ request.url_for('static', path='/catalog.css').path }}">
+    <script type="module" src="{{ request.url_for('static', path='/catalog.js').path }}"></script>
+{% endblock %}
+
+{% block content %}
+    <header class="page-heading catalog-heading">
+        <div>
+            <h1>Экзопланеты</h1>
+            <p class="page-heading__description">50 кандидатов для изучения условий, в которых на поверхности могла бы существовать жидкая вода.</p>
+        </div>
+        <div class="archive-tools">
+            <div>
+                <a class="quiet-link" href="https://exoplanetarchive.ipac.caltech.edu/">NASA Exoplanet Archive</a>
+                {% if catalog %}<time datetime="{{ catalog.fetched_at }}">{{ fetched_at }}</time>{% endif %}
+            </div>
+            <button class="button glass" type="button" id="refresh-archive" data-url="{{ request.url_for('refresh_catalog').path }}">
+                <span aria-hidden="true">↻</span> Обновить
+            </button>
+            <p class="archive-status" id="archive-status" role="status"></p>
+        </div>
+    </header>
+
+    {% if catalog %}
+        <div class="catalog-grid" id="catalog-grid" data-card-url="{{ request.url_for('exoplanet_card').path }}">
+            <a class="button catalog-jump" href="#planet-ranking">К рейтингу <span aria-hidden="true">↓</span></a>
+            <div id="planet-card">
+                {% include "planet_card.html" %}
+            </div>
+            <aside class="ranking glass" id="planet-ranking" aria-labelledby="ranking-title">
+                <header class="ranking__heading">
+                    <div>
+                        <h2 id="ranking-title">Топ‑50 кандидатов</h2>
+                        <p>Учебный индекс обитаемости · до 100 баллов</p>
+                    </div>
+                    <a class="source-arrow" href="#habitability-method" aria-label="Как устроен рейтинг" title="Методика рейтинга">↗</a>
+                </header>
+                <label class="search-box">
+                    <span class="search-icon" aria-hidden="true"></span>
+                    <span class="sr-only">Название планеты или звезды</span>
+                    <input id="planet-search" type="search" placeholder="Планета или звезда" autocomplete="off">
+                </label>
+                <div class="ranking__columns" aria-hidden="true"><span>Планета</span><span>Баллы</span></div>
+                <ol class="ranking-list" id="ranking-list" aria-label="Топ-50 по индексу обитаемости">
+                    {% for item in ranking %}
+                        <li data-search="{{ item.name }} {{ item.host }}">
+                            <a class="rank-row" data-planet="{{ item.name }}"
+                               href="{{ request.url_for('exoplanets').path }}?{{ item.name|query }}"
+                               {% if planet.name == item.name %}aria-current="true"{% endif %}>
+                                <span class="rank-row__position">{{ '%02d'|format(item.rank) }}</span>
+                                <span class="rank-row__swatch" data-flux="{{ item.metrics.flux.value if item.metrics.flux else '' }}" aria-hidden="true"></span>
+                                <span class="rank-row__text">
+                                    <strong>{{ item.name }}</strong>
+                                    <small>{{ "Орбита рассчитана" if item.habitability.basis == "orbit" else "Оценка по расстоянию" }}</small>
+                                </span>
+                                <span class="rank-row__score">{{ item.habitability.score|number(1) }}</span>
+                            </a>
+                        </li>
+                    {% endfor %}
+                </ol>
+                <p class="ranking-empty" id="ranking-empty" hidden>По этому запросу планет в топ‑50 нет.</p>
+                <p class="catalog-status" id="catalog-status" role="status"></p>
+                <div class="ranking__foot">
+                    <p id="ranking-count" aria-live="polite">50 из {{ catalog.eligible_count|number(0) }} планет с достаточными данными</p>
+                    {% if example %}
+                        <a class="quiet-link" data-planet="{{ example }}" href="{{ request.url_for('exoplanets').path }}?{{ example|query }}">
+                            55 Cnc · пример системы с гигантами <span aria-hidden="true">↗</span>
+                        </a>
+                    {% endif %}
+                </div>
+            </aside>
+        </div>
+
+        <details class="method glass" id="habitability-method">
+            <summary>Как устроены рейтинг и модель орбиты</summary>
+            <div class="method__body">
+                <p><strong>Что означает балл.</strong> Это учебный индекс для отбора целей наблюдений. Его шкала показывает, насколько условия соответствуют критериям модели. Вероятность существования жизни по этим данным вычислить нельзя.</p>
+                <p><strong>Тепловые условия · до 70 баллов.</strong> 56 баллов умножаем на долю оборота в зоне обитаемости. Ещё до 14 даёт близость большой полуоси к зоне. За пределами зоны этот вклад падает как обратная четвёртая степень отношения расстояний до ближайшей границы. Без данных о форме орбиты доступно до 60 баллов по одной большой полуоси или расстоянию, оценённому по потоку. Границы зоны зависят от светимости и температуры звезды. <a class="quiet-link" href="{{ hz_model }}">Модель ExoColumn ↗</a></p>
+                <p><strong>Признаки твёрдой поверхности · до 30 баллов.</strong> Оценка по радиусу растёт от 0,35 до 0,75 радиуса Земли, максимальна до 1,4 и плавно падает к 2,5. При наличии массы и радиуса из публикаций рассчитываем среднюю плотность. При 4 г/см³ и выше сохраняем полный вклад размера, при 1,5 г/см³ и ниже — 40%, между ними — пропорционально. При неизвестной плотности засчитываем 85% оценки по размеру. Веса и пороги — выбор проекта. Газовые гиганты и записи с оспариваемым статусом пропускаем. <a class="quiet-link" href="https://arxiv.org/abs/1407.4457">Исследование связи радиуса и состава ↗</a></p>
+                <p><strong>Атмосфера и активность звезды.</strong> Публикуем доступные наблюдения в карточке. Для единообразного сравнения рейтинга этих данных пока недостаточно. ESI остаётся отдельным показателем сходства с Землёй.</p>
+                <p><strong>Ореол на портрете.</strong> Его ширина стилизована по температуре, радиусу и доступной массе, оттенок — по звёздному потоку. При неизвестном составе показываем условный вариант. Наблюдения об атмосфере приведены отдельно в карточке.</p>
+            </div>
+        </details>
+    {% else %}
+        <section class="method glass">
+            <h2>Каталог ожидает выгрузку</h2>
+            <p>Нажми «Обновить», чтобы получить данные из NASA Exoplanet Archive.</p>
+        </section>
+    {% endif %}
+{% endblock %}
+
+{% block footer %}
+    <a class="quiet-link" href="https://doi.org/10.26133/NEA13">NASA Exoplanet Archive · PSCompPars</a>
+{% endblock %}

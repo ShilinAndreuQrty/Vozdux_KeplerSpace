@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block body_class %}solar-page{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="{{ request.url_for('static', path='/solar.css').path }}">
+    <script type="module" src="{{ request.url_for('static', path='/solar.js').path }}"></script>
+{% endblock %}
+
+{% block content %}
+    <section class="observatory" aria-labelledby="solar-title">
+        <canvas class="observatory__sky" data-sky aria-hidden="true"></canvas>
+        <canvas class="observatory__scene" id="solar-scene" tabindex="0"
+                aria-label="Карта орбит. Перетащи карту или используй стрелки для вращения. Плюс и минус меняют масштаб."></canvas>
+        <noscript><p class="scene-fallback">Для интерактивной карты нужен JavaScript.</p></noscript>
+        <p class="scene-fallback" id="solar-fallback" hidden>В этом браузере недоступна отрисовка карты.</p>
+
+        <header class="solar-heading">
+            <h1 id="solar-title">Солнечная<br class="solar-heading__break"> система</h1>
+            <p>Положения планет по модели JPL</p>
+        </header>
+
+        <details class="object-panel glass" open>
+            <summary>Объекты</summary>
+            <div class="object-list" aria-label="Выбрать объект">
+                {% for key, name, color in planets %}
+                    <button class="object-button" type="button" data-body="{{ key }}" aria-pressed="false">
+                        <span class="object-dot" style="--object-color: {{ color }}" aria-hidden="true"></span>{{ name }}
+                    </button>
+                {% endfor %}
+            </div>
+        </details>
+
+        <aside class="object-detail glass" aria-label="Сведения об объекте" hidden>
+            <button class="button icon-button object-close" id="solar-clear" type="button" aria-label="Закрыть сведения">×</button>
+            <div aria-live="polite">
+                <h2 id="body-name"></h2>
+                <p class="object-detail__type" id="body-type"></p>
+            </div>
+            <dl class="object-facts" id="body-facts"></dl>
+        </aside>
+
+        <div class="scene-caption">
+            <p>Расстояния сжаты, размеры тел увеличены.</p>
+            <a class="quiet-link" href="https://ssd.jpl.nasa.gov/planets/approx_pos.html">Модель JPL ↗</a>
+        </div>
+
+        <div class="time-controls glass liquid" role="group" aria-label="Управление временем">
+            <div class="time-transport">
+                <button class="button icon-button" id="solar-reverse" type="button" aria-label="Обратный ход времени" aria-pressed="false" title="Обратный ход времени">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6 3 12l6 6M3 12h12a5 5 0 0 1 5 5v1"/></svg>
+                </button>
+                <button class="button icon-button" id="solar-pause" type="button" aria-label="Приостановить время" title="Пауза">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path data-play hidden d="m9 5 11 7-11 7Z"/><path data-pause d="M9 6v12m6-12v12"/></svg>
+                </button>
+            </div>
+            <div class="scene-time">
+                <span class="scene-time__status" id="solar-time-mode">Реальное время · МСК</span>
+                <time id="solar-time"></time>
+            </div>
+            <select class="speed-select" id="solar-speed" aria-label="Скорость времени">
+                <option value="1">1×</option>
+                <option value="3600">1 ч/с</option>
+                <option value="86400">1 день/с</option>
+                <option value="604800">1 нед/с</option>
+            </select>
+            <details class="solar-date" id="solar-date">
+                <summary class="button icon-button" aria-label="Указать дату" title="Указать дату">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="6" width="16" height="14" rx="2"/><path d="M8 4v4m8-4v4M4 11h16"/></svg>
+                </summary>
+                <form id="solar-date-form" class="glass">
+                    <label for="solar-date-input">Дата и время · МСК</label>
+                    <input id="solar-date-input" type="datetime-local" min="1800-01-01T00:00" max="2050-12-31T23:59" required>
+                    <button class="button button--primary" type="submit">Перейти</button>
+                </form>
+            </details>
+            <button class="button" id="solar-now" type="button">Сейчас</button>
+        </div>
+
+        <div class="camera-controls glass liquid" role="group" aria-label="Управление камерой">
+            <button class="button icon-button" type="button" data-camera="out" aria-label="Уменьшить масштаб">−</button>
+            <button class="button icon-button" type="button" data-camera="in" aria-label="Увеличить масштаб">+</button>
+            <button class="button icon-button" type="button" data-camera="reset" aria-label="Сбросить камеру" title="Сбросить камеру">↺</button>
+        </div>
+    </section>
+{% endblock %}

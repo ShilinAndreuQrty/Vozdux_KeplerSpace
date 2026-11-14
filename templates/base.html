@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#070b14">
+    <title>{{ sections[active_slug].title }} · KeplerSpace</title>
+    <link rel="icon" href="{{ request.url_for('static', path='/images/keplerspace-icon.png').path }}" type="image/png">
+    <link rel="stylesheet" href="{{ request.url_for('static', path='/styles.css').path }}">
+    <script src="{{ request.url_for('static', path='/navigation.js').path }}" defer></script>
+    {% block head %}{% endblock %}
+</head>
+<body class="{% block body_class %}{% endblock %}">
+    <a class="skip-link" href="#main-content">Перейти к содержимому</a>
+    <header class="site-header">
+        <div class="container site-header__inner">
+            <a class="brand" href="{{ request.url_for('home').path }}">
+                <span class="brand__mark" aria-hidden="true"><span></span></span>
+                <span>Kepler<span class="brand__accent">Space</span></span>
+            </a>
+            <button class="menu-toggle button glass" type="button" aria-controls="site-navigation" aria-expanded="false">
+                <span class="menu-toggle__icon" aria-hidden="true"></span>
+                Меню
+            </button>
+            <nav class="site-nav glass liquid" id="site-navigation" aria-label="Разделы KeplerSpace">
+                {% for slug, item in sections.items() %}
+                    <a class="site-nav__link"
+                       href="{{ request.url_for('section', slug=slug).path if slug else request.url_for('home').path }}"
+                       {% if slug == active_slug %}aria-current="page"{% endif %}>
+                        <span>{{ item.title }}</span>
+                        {% if item.future %}<span class="future-badge">В будущем</span>{% endif %}
+                    </a>
+                {% endfor %}
+            </nav>
+        </div>
+    </header>
+
+    <main id="main-content" class="container page" tabindex="-1">
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="site-footer">
+        <div class="container site-footer__inner">
+            <span>Vozdux · TulaHack 2026</span>
+            {% block footer %}{% endblock %}
+        </div>
+    </footer>
+</body>
+</html>
