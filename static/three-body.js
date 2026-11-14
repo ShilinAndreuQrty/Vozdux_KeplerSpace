@@ -339,8 +339,9 @@ function clearSelection(){
     }
 }
 function read(){return{m:+$("tb-mass").value,x:+$("tb-x").value,y:+$("tb-y").value,v:+$("tb-vel").value,a:+$("tb-angle").value}}
-function applyMass(all){let m=+$("tb-mass").value;if(!Number.isFinite(m)||m<=0||m>1000){alert("Масса должна быть больше нуля и не превышать 1000 масс Солнца.");return}markCustom();B.forEach((b,i)=>{if(all||i===sel)b.m=m});$("tb-status").textContent=all?"Масса применена ко всем телам":"Масса применена к телу";reset();editor()}
-function applyVelocity(all){let p=read();if(![p.v,p.a].every(Number.isFinite)||p.v<0||p.v>10000||Math.abs(p.a)>360){alert("Проверь скорость и угол вектора.");return}markCustom();B.forEach((b,i)=>{if(all||i===sel){let d=all?b:draftFor(i);setV(d,p.v,p.a);if(all){b.vx=d.vx;b.vy=d.vy;delete DRAFT[i]}}});if(!all){let d=draftFor(sel);setV(d,p.v,p.a)}$("tb-status").textContent=all?"Скорость применена ко всем телам":"Скорость применена к телу";reset();editor()}
+function commitSelectedChanges(p) {if (sel < 0) return;const d = draftFor(sel);B[sel].m = p.m;B[sel].x = p.x;B[sel].y = p.y;B[sel].vx = d.vx;B[sel].vy = d.vy;delete DRAFT[sel];delete DIRTY[sel];}
+function applyMass(all) {const p = read();if (!Number.isFinite(p.m) || p.m <= 0 || p.m > 1000) {alert("Масса должна быть больше нуля и не превышать 1000 масс Солнца.");return;}if (sel >= 0) {commitSelectedChanges(p);}markCustom();if (all) {B.forEach(b => b.m = p.m);}setStatus(all? "Масса применена ко всем телам": "Масса применена к телу");reset();editor();}
+function applyVelocity(all) {const p = read();if (!Number.isFinite(p.v) || p.v < 0 || p.v > 10000) {alert("Скорость должна быть от 0 до 10000 км/с.");return;}if (sel >= 0) {commitSelectedChanges(p);}markCustom();if (all) {B.forEach(b => {const angle = Math.atan2(b.vy, b.vx);const velocity = p.v * KM_S_TO_AU_DAY;b.vx = velocity * Math.cos(angle);b.vy = velocity * Math.sin(angle);});} else if (sel >= 0) {setV(B[sel], p.v, p.a);}setStatus(all? "Скорость применена ко всем телам": "Скорость применена к телу");reset();editor();}
 function updateDraftFromInputs(){if(sel<0)return;let v=+$("tb-vel").value,a=+$("tb-angle").value;if(!Number.isFinite(v)||!Number.isFinite(a))return;setV(draftFor(sel),v,a);markPendingChange();markCustom();$("tb-vel-out").textContent=fmt(v);$("tb-vel-range").value=clamp(v,0,100);draw()}
 c.addEventListener("pointerdown",e=>{let r=c.getBoundingClientRect(),p={x:e.clientX-r.left,y:e.clientY-r.top};
     if(sel>=0){
@@ -441,7 +442,7 @@ $("tb-y").oninput = markPendingChange;
 $("tb-vel").oninput=updateDraftFromInputs;
 $("tb-vel-range").oninput=e=>{$("tb-vel").value=e.target.value;updateDraftFromInputs()};
 $("tb-angle").oninput=updateDraftFromInputs;
-$("tb-apply").onclick=()=>{let p=read();if(![p.m,p.x,p.y].every(Number.isFinite)||p.m<=0||p.m>1000||Math.abs(p.x)>10000||Math.abs(p.y)>10000){alert("Проверь массу и координаты.");return}markCustom();B[sel].m=p.m;B[sel].x=p.x;B[sel].y=p.y;let d=draftFor(sel);B[sel].vx=d.vx;B[sel].vy=d.vy;delete DRAFT[sel];delete DIRTY[sel];$("tb-status").textContent="Параметры тела применены";reset();editor()};
+$("tb-apply").onclick = () => {if (sel < 0) return;const p = read();if (![p.m, p.x, p.y].every(Number.isFinite) ||p.m <= 0 || p.m > 1000 ||Math.abs(p.x) > 10000 ||Math.abs(p.y) > 10000) {alert("Проверь массу и координаты.");return;}commitSelectedChanges(p);markCustom();setStatus("Параметры тела применены");reset();editor();};
 $("tb-cancel").onclick = () => {if (sel < 0) return;delete DRAFT[sel];delete DIRTY[sel];editor();updateStartControl();setStatus("Несохранённые изменения отменены");};
 $("tb-reset-selected").onclick=resetSelected;
 $("tb-mass-all").onclick=()=>applyMass(true);$("tb-velocity-all").onclick=()=>applyVelocity(true);
