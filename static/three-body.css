@@ -36,3 +36,29 @@
 .tb-events li {
     margin-top: 4px;
 }
+
+.tb-head > #tb-status.is-alert {
+    color: #fff;
+    background: #8f252f;
+    border: 1px solid #ff6875;
+    font-weight: 800;
+    box-shadow: 0 0 14px #ff354966;
+    animation: tb-status-blink 0.7s ease-in-out 6;
+}
+
+@keyframes tb-status-blink {
+    0%, 100% {
+        opacity: 1;
+        box-shadow: 0 0 14px #ff354966;
+    }
+    50% {
+        opacity: 0.3;
+        box-shadow: 0 0 2px #ff354922;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .tb-head > #tb-status.is-alert {
+        animation: none;
+    }
+}

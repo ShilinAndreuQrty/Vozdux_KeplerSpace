@@ -17,14 +17,21 @@ triangle:[[0,0,0,0,1],[1.2,0,0,0,1],[.6,1.0392304845,0,0,1]],
 chaos:[[-1.05,.25,.12,.55,1],[.82,.52,-.28,-.12,1],[.12,-.82,.34,-.18,1]]};
 let B=[],INITIAL=[],DRAFT={},DIRTY={},T=[[],[],[]],
     EVENTS=[],EVENT_KEYS=new Set(),
-    sel=-1,run=false,time=0,speed=8,acc=0,last=0,
+    sel=-1,run=false,time=0,speed=32,acc=0,last=0,
     drag=-1,vectorDrag=false,dragPending=false,
     dragStart=null,dragTimer=null,
     V={x:0,y:0,s:100},activePreset="figure8";
+const STABILITY_CHECK_DAYS = 500;
+const EJECTION_CONFIRM_DAYS = 20;
+
+let ejectionSince = {};
+let maxSeparation = 0;
+let stabilityReported = false;
 function markCustom(){
     $("tb-preset").value="custom";
 }
 const clamp=(x,a,b)=>Math.max(a,Math.min(b,x)),fmt=(x,n=3)=>Number(x).toFixed(n).replace(".",",");
+function setStatus(message, alert = false) {const status = $("tb-status");status.textContent = message;status.classList.toggle("is-alert", alert);}
 function setV(b,v,a){ let q=a*Math.PI/180; let w=v*KM_S_TO_AU_DAY; b.vx=w*Math.cos(q); b.vy=w*Math.sin(q); };
 const vel=b=>Math.hypot(b.vx,b.vy)/KM_S_TO_AU_DAY;
 function randomChaos(){
@@ -108,14 +115,16 @@ function addEvent(type, bodies, message) {
 
 function detectEvents() {
     let collision = false;
+    let ejection = false;
 
-    // Проверяем все пары тел на столкновение.
     for (let i = 0; i < B.length; i++) {
         for (let j = i + 1; j < B.length; j++) {
-            const dx = B[i].x - B[j].x;
-            const dy = B[i].y - B[j].y;
+            const distance = Math.hypot(
+                B[i].x - B[j].x,
+                B[i].y - B[j].y
+            );
 
-            if (Math.hypot(dx, dy) <= COLLISION_DISTANCE) {
+            if (distance <= COLLISION_DISTANCE) {
                 addEvent(
                     "collision",
                     [i, j],
@@ -126,18 +135,15 @@ function detectEvents() {
         }
     }
 
-    // Проверяем возможный выброс каждого тела.
     for (let i = 0; i < B.length; i++) {
-        const pair = [0, 1, 2].filter(j => j !== i);
-        const a = B[pair[0]];
-        const b = B[pair[1]];
-        const body = B[i];
+        if (EVENT_KEYS.has("ejection:" + i)) continue;
 
+        const pair = B.filter((_, j) => j !== i);
+        const a = pair[0], b = pair[1], body = B[i];
         const mass = a.m + b.m;
 
         const cx = (a.m*a.x + b.m*b.x) / mass;
         const cy = (a.m*a.y + b.m*b.y) / mass;
-
         const cvx = (a.m*a.vx + b.m*b.vx) / mass;
         const cvy = (a.m*a.vy + b.m*b.vy) / mass;
 
@@ -149,34 +155,69 @@ function detectEvents() {
         const distance = Math.hypot(rx, ry);
         const radial = rx*rvx + ry*rvy;
 
-        const specificEnergy =
-            0.5*(rvx*rvx + rvy*rvy)
+        const energy = 0.5*(rvx*rvx + rvy*rvy)
             - G*mass/Math.max(distance, 1e-12);
 
-        if (
+        const candidate =
             distance >= EJECTION_DISTANCE &&
             radial > 0 &&
-            specificEnergy > 0
-        ) {
-            addEvent(
-                "ejection",
-                [i],
-                "Возможный выброс тела " + (i + 1)
-                + " — удаление " + fmt(distance, 1) + " а.е."
-            );
+            energy > 0;
+
+        if (candidate) {
+            if (ejectionSince[i] === undefined) {
+                ejectionSince[i] = time;
+            }
+
+            if (time - ejectionSince[i] >= EJECTION_CONFIRM_DAYS) {
+                addEvent(
+                    "ejection",
+                    [i],
+                    "Выброс тела " + (i + 1)
+                );
+                ejection = true;
+            }
+        } else {
+            delete ejectionSince[i];
         }
     }
 
-    // Сначала проверили все события, затем остановили модель.
-    if (collision) {
+    const distances = [];
+
+    for (let i = 0; i < B.length; i++) {
+        for (let j = i + 1; j < B.length; j++) {
+            distances.push(Math.hypot(
+                B[i].x - B[j].x,
+                B[i].y - B[j].y
+            ));
+        }
+    }
+
+    maxSeparation = Math.max(maxSeparation, ...distances);
+
+    if (
+        time >= STABILITY_CHECK_DAYS &&
+        !stabilityReported &&
+        EVENTS.length === 0 &&
+        maxSeparation < EJECTION_DISTANCE
+    ) {
+        stabilityReported = true;
+
+        addEvent(
+            "stable",
+            [],
+            "Предварительно устойчивое движение за 500 суток"
+        );
+    }
+
+    if (collision || ejection) {
         run = false;
         acc = 0;
 
-        $("tb-start").disabled = false;
-        $("tb-pause").disabled = true;
-        $("tb-pause").textContent = "Пауза";
-        $("tb-status").textContent =
-            "Модель остановлена: обнаружено столкновение";
+        $("tb-start").disabled = true;
+        $("tb-start").textContent = "Столкновение";
+        $("tb-status").textContent = collision
+            ? "Модель остановлена: обнаружено столкновение"
+            : "Модель остановлена: обнаружен выброс тела";
     }
 }
 
@@ -202,6 +243,9 @@ function renderEvents() {
 function clearEvents() {
     EVENTS = [];
     EVENT_KEYS.clear();
+    ejectionSince = {};
+    maxSeparation = 0;
+    stabilityReported = false;
     renderEvents();
 }
 
@@ -241,9 +285,8 @@ function reset(){
     T=B.map(b=>[{x:b.x,y:b.y}]);
     clearEvents();
 
-    $("tb-start").disabled=false;
-    $("tb-pause").disabled=true;
-    $("tb-pause").textContent="Пауза";
+    $("tb-start").disabled = false;
+    $("tb-start").textContent = "Запустить";
     $("tb-status").textContent="Модель остановлена";
     draw();
 }
@@ -382,10 +425,27 @@ $("tb-apply").onclick=()=>{let p=read();if(![p.m,p.x,p.y].every(Number.isFinite)
 $("tb-reset-selected").onclick=resetSelected;
 $("tb-mass-all").onclick=()=>applyMass(true);$("tb-velocity-all").onclick=()=>applyVelocity(true);
 $("tb-preset").onchange=e=>preset(e.target.value);
-$("tb-start").onclick=()=>{if(Object.keys(DIRTY).length){$("tb-status").textContent="Сначала примени или сбрось изменённый черновой вектор";return}run=true;$("tb-start").disabled=true;$("tb-pause").disabled=false;$("tb-status").textContent="Симуляция выполняется"};
-$("tb-pause").onclick=()=>{run=!run;$("tb-pause").textContent=run?"Пауза":"Продолжить";$("tb-start").disabled=run;$("tb-status").textContent=run?"Симуляция выполняется":"Пауза"};
+$("tb-start").onclick = () => {if (Object.keys(DIRTY).length) {$("tb-status").textContent ="Сначала примени или сбрось изменённый черновой вектор";return;}run = !run;$("tb-start").textContent = run? "Остановить": "Продолжить";$("tb-status").textContent = run? "Симуляция выполняется": "Симуляция остановлена";};
 $("tb-reset").onclick=resetAll;$("tb-speed").oninput=e=>{speed=+e.target.value;$("tb-speed-out").textContent=speed+"×"};
-function frame(n){if(!last)last=n;let dt=Math.min((n-last)/1000,.05);last=n;if(run){acc+=dt*speed*2;let z=0;while(acc>=DT&&z++<500){step();acc-=DT}}draw();requestAnimationFrame(frame)}
+function frame(n) {
+    if (!last) last = n;
+
+    let dt = Math.min((n - last) / 1000, 0.05);
+    last = n;
+
+    if (run) {
+        acc += dt * speed * 2;
+        let z = 0;
+
+        while (run && acc >= DT && z++ < 500) {
+            step();
+            acc -= DT;
+        }
+    }
+
+    draw();
+    requestAnimationFrame(frame);
+}
 window.addEventListener("keydown",e=>{
     if(e.key!=="Escape")return;
 
