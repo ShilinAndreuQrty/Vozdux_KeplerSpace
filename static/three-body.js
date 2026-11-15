@@ -1,5 +1,5 @@
 import { bodyRadius, firstContact, stateAtContact } from "./three-body-collision.js";
-import { createParticleImpact, fragmentRadius } from "./three-body-particles.js";
+import { createParticleImpact } from "./three-body-particles.js";
 import { clearToast, showToast } from "./three-body-toast.js";
 
 (() => {
@@ -38,6 +38,11 @@ import { clearToast, showToast } from "./three-body-toast.js";
             [-1.1, 0, 0.24, 0, 1],
             [1.1, 0, -0.24, 0, 1],
             [0, 1.55, 0, 0.12, 0.6]
+        ],
+        grazing: [
+            [-0.85, 0, 0.34, -0.165, 1],
+            [0.85, 0, -0.34, 0.165, 1],
+            [0, 2.15, 0, 0.12, 0.6]
         ],
         chaos: [
             [-1.05, 0.25, 0.12, 0.55, 1],
@@ -148,6 +153,7 @@ import { clearToast, showToast } from "./three-body-toast.js";
 
     function preset(name) {
         activePreset = name;
+        resize();
 
         const source = name === "chaos" ? randomChaos() : PRESETS[name];
 
@@ -427,9 +433,10 @@ import { clearToast, showToast } from "./three-body-toast.js";
         canvas.width = bounds.width * pixelRatio;
         canvas.height = bounds.height * pixelRatio;
         context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+        const grazing = activePreset === "grazing";
+        viewport.scale = Math.min(bounds.width, bounds.height) / (grazing ? 3.35 : 4.67);
         viewport.x = bounds.width / 2;
-        viewport.y = bounds.height / 2;
-        viewport.scale = Math.min(bounds.width, bounds.height) / 4.67;
+        viewport.y = bounds.height / 2 + (grazing ? 0.28 * viewport.scale : 0);
     }
 
     // Ось Y холста направлена вниз.
@@ -506,6 +513,45 @@ import { clearToast, showToast } from "./three-body-toast.js";
         context.restore();
     }
 
+    function drawDebris({ indices, particles, remnant }) {
+        indices.forEach((index, group) => {
+            context.fillStyle = BODY_COLORS[index];
+            context.strokeStyle = BODY_COLORS[index];
+            context.lineWidth = 1;
+            context.globalAlpha = 0.22;
+            context.beginPath();
+            for (const p of particles) {
+                if (p.group !== group || !(p.tail?.length > 1)) continue;
+                const first = toScreen(p.tail[0]);
+                context.moveTo(first.x, first.y);
+                for (let i = 1; i < p.tail.length; i++) {
+                    const point = toScreen(p.tail[i]);
+                    context.lineTo(point.x, point.y);
+                }
+                const last = toScreen(p);
+                context.lineTo(last.x, last.y);
+            }
+            context.stroke();
+            context.globalAlpha = 0.82;
+            for (const p of particles) {
+                if (p.group !== group) continue;
+                const { x, y } = toScreen(p);
+                context.fillRect(x - 0.62, y - 0.62, 1.24, 1.24);
+            }
+        });
+        context.globalAlpha = 1;
+
+        if (remnant.m > 0) {
+            const [first, second] = indices.map(index => PARTICLE_COLORS[index]);
+            const channels = first.map((channel, i) => Math.round(channel + (second[i] - channel) * remnant.mix));
+            const point = toScreen(remnant);
+            context.fillStyle = `rgb(${channels.join(",")})`;
+            context.beginPath();
+            context.arc(point.x, point.y, viewport.scale * Math.sqrt(remnant.measure), 0, 2 * Math.PI);
+            context.fill();
+        }
+    }
+
     function render() {
         const width = canvas.clientWidth;
         const height = canvas.clientHeight;
@@ -559,33 +605,7 @@ import { clearToast, showToast } from "./three-body-toast.js";
                 BODY_COLORS[i]
             );
         });
-        if (impact) {
-            const [first, second] = impact.indices.map(index => PARTICLE_COLORS[index]);
-            for (const particle of impact.particles) {
-                const point = toScreen(particle);
-                const channels = first.map((channel, i) => Math.round(channel + (second[i] - channel) * particle.mix));
-                context.fillStyle = `rgb(${channels.join(",")})`;
-                if (particle.tail?.length > 1) {
-                    context.strokeStyle = context.fillStyle;
-                    context.lineWidth = 1;
-                    context.globalAlpha = 0.34;
-                    context.beginPath();
-                    const start = toScreen(particle.tail[0]);
-                    context.moveTo(start.x, start.y);
-                    for (const sample of particle.tail.slice(1)) {
-                        const { x, y } = toScreen(sample);
-                        context.lineTo(x, y);
-                    }
-                    context.lineTo(point.x, point.y);
-                    context.stroke();
-                    context.globalAlpha = 1;
-                }
-                context.beginPath();
-                const radius = fragmentRadius(particle, 2, impact.accretion);
-                context.arc(point.x, point.y, Math.max(0.85, viewport.scale * radius), 0, 2 * Math.PI);
-                context.fill();
-            }
-        }
+        if (impact) drawDebris(impact);
         byId("tb-time").textContent = formatNumber(time, 2) + " суток";
     }
 

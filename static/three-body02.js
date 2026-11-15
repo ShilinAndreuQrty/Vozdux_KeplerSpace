@@ -27,6 +27,7 @@ import { clearToast, showToast } from "./three-body-toast.js";
     const MIN_ARROW_LENGTH = 0.1;
     const DEFAULT_CAMERA_POSITION = [3.8, -5.8, 4.7];
     const COLLISION_CAMERA_POSITION = [0.9, -3.2, 2.0];
+    const GRAZING_CAMERA_POSITION = [0.85, -1.6, 2.55];
     const COLORS = [0x8ddcff, 0xffc58e, 0xc7a5ff];
     const COLOR_CSS = ["#8ddcff", "#ffc58e", "#c7a5ff"];
 
@@ -46,6 +47,11 @@ import { clearToast, showToast } from "./three-body-toast.js";
             [-1.1, 0, -0.55, 0.24, 0, 0.12, 1],
             [1.1, 0, 0.55, -0.24, 0, -0.12, 1],
             [0, 2, 0, 0, 0.12, 0, 0.6]
+        ],
+        grazing: [
+            [-0.85, 0, -0.27, 0.34, -0.165, 0.108, 1],
+            [0.85, 0, 0.27, -0.34, 0.165, -0.108, 1],
+            [0, 2.15, 0, 0, 0.12, 0, 0.6]
         ]
     };
 
@@ -432,7 +438,11 @@ import { clearToast, showToast } from "./three-body-toast.js";
         pendingChanges = {};
         selectedIndex = -1;
         controls.target.set(0, 0, 0);
-        camera.position.set(...(name === "collision" ? COLLISION_CAMERA_POSITION : DEFAULT_CAMERA_POSITION));
+        const cameraPosition = {
+            collision: COLLISION_CAMERA_POSITION,
+            grazing: GRAZING_CAMERA_POSITION
+        }[name] ?? DEFAULT_CAMERA_POSITION;
+        camera.position.set(...cameraPosition);
         controls.update();
         updateEditor();
         resetAll();
