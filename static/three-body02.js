@@ -1,6 +1,8 @@
-import { showToast } from "./three-body-toast.js";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { bodyRadius, firstContact } from "./three-body-collision.js";
+import { createImpactFlash } from "./three-body-impact.js";
+import { clearToast, showToast } from "./three-body-toast.js";
 
 (() => {
     const stage = document.getElementById("tb-canvas");
@@ -15,7 +17,6 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
     const KM_S_TO_AU_DAY = DAY_S / AU_KM;
     const SQRT_G = Math.sqrt(G);
     const STEP_DAYS = 0.01;
-    const COLLISION_DISTANCE = 0.01;
     const EJECTION_DISTANCE = 10;
     const STABILITY_CHECK_DAYS = 500;
     const EJECTION_CONFIRM_DAYS = 20;
@@ -23,6 +24,10 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
     const TRAIL_MAX = 20000;
     const VECTOR_SCALE = 28;
     const MIN_ARROW_LENGTH = 0.1;
+    const IMPACT_DURATION_MS = 720;
+    const SPHERE_AXIS = new THREE.Vector3(0, 1, 0);
+    const DEFAULT_CAMERA_POSITION = [3.8, -5.8, 4.7];
+    const COLLISION_CAMERA_POSITION = [0.9, -3.2, 2.0];
     const COLORS = [0x8ddcff, 0xffc58e, 0xc7a5ff];
     const COLOR_CSS = ["#8ddcff", "#ffc58e", "#c7a5ff"];
 
@@ -37,6 +42,11 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
             [0, 0, 0, 0, 0, 0, 1],
             [1.2, 0, 0, 0, 0, 0, 1],
             [0.6, 1.0392304845, 0, 0, 0, 0, 1]
+        ],
+        collision: [
+            [-1.1, 0, -0.55, 0.24, 0, 0.12, 1],
+            [1.1, 0, 0.55, -0.24, 0, -0.12, 1],
+            [0, 2, 0, 0, 0.12, 0, 0.6]
         ]
     };
 
@@ -54,7 +64,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
     let timeAccumulator = 0;
     let lastFrameTime = 0;
     let bodyPointer = null;
-    let vectorPointer = false;
+    let vectorPointerId = null;
     let blankPointer = null;
     let dragPlane = new THREE.Plane();
     let dragBodyIndex = -1;
@@ -62,13 +72,16 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
     let ejectionSince = {};
     let maxSeparation = 0;
     let stabilityReported = false;
+    let impact = null;
 
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x080e1b);
+    const impactFlash = createImpactFlash(scene);
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 
     const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 1000);
     camera.up.set(0, 0, 1);
-    camera.position.set(3.8, -5.8, 4.7);
+    camera.position.set(...DEFAULT_CAMERA_POSITION);
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -114,6 +127,8 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
     const trailObjects = [];
     const raycaster = new THREE.Raycaster();
     const pointerNdc = new THREE.Vector2();
+    const bodyHitbox = new THREE.Sphere();
+    const hitPoint = new THREE.Vector3();
     const tempVector = new THREE.Vector3();
     const planeHit = new THREE.Vector3();
 
@@ -134,7 +149,6 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
             roughness: 0.3
         });
         const mesh = new THREE.Mesh(sphereGeometry, material);
-        mesh.userData.bodyIndex = i;
         scene.add(mesh);
 
         const halo = new THREE.Mesh(haloGeometry, new THREE.MeshBasicMaterial({
@@ -164,7 +178,6 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
         scene.add(handle);
 
         const label = makeLabel(i);
-        scene.add(label);
         bodyObjects.push({ mesh, halo, arrow, handle, label });
 
         const positions = new Float32Array(TRAIL_MAX * 3);
@@ -203,6 +216,22 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
         return raycaster.ray.intersectPlane(dragPlane, planeHit) ? planeHit.clone() : null;
     }
 
+    function bodyAtPointer() {
+        let index = -1;
+        let nearestDistance = Infinity;
+        bodies.forEach((body, candidate) => {
+            bodyHitbox.center.set(body.x, body.y, body.z);
+            bodyHitbox.radius = bodyRadius(body.m);
+            if (!raycaster.ray.intersectSphere(bodyHitbox, hitPoint)) return;
+            const distance = raycaster.ray.origin.distanceToSquared(hitPoint);
+            if (distance < nearestDistance) {
+                nearestDistance = distance;
+                index = candidate;
+            }
+        });
+        return index;
+    }
+
     function updateTrail(index) {
         const points = trails[index];
         const line = trailObjects[index];
@@ -218,16 +247,41 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
         line.geometry.computeBoundingSphere();
     }
 
+    function squashBody(mesh, radius) {
+        // Сжимаем вдоль линии удара и сохраняем точку контакта.
+        const remaining = 1 - impact.progress;
+        const compression = 0.53 + 0.47 * remaining ** 3;
+        const width = radius / Math.sqrt(compression);
+        mesh.scale.set(width, radius * compression, width);
+        mesh.quaternion.copy(impact.rotation);
+        mesh.position.lerp(impact.point, 1 - compression);
+        mesh.material.emissiveIntensity = 0.28 + 0.8 * remaining ** 3;
+    }
+
     function updateVisuals() {
         bodies.forEach((body, i) => {
             const objects = bodyObjects[i];
             const position = tempVector.set(body.x, body.y, body.z);
-            const radius = 0.075 + Math.min(0.055, Math.cbrt(Math.max(body.m, 0.001)) * 0.025);
+            const radius = bodyRadius(body.m);
+            const struck = impact !== null && impact.indices.includes(i);
+            const selected = selectedIndex === i;
             objects.mesh.position.copy(position);
+            objects.halo.visible = !struck;
+            objects.arrow.visible = !struck;
+            objects.handle.visible = !struck && selected && !running;
+            updateTrail(i);
+
+            if (struck) {
+                squashBody(objects.mesh, radius);
+                objects.label.style.display = "none";
+                return;
+            }
+
             objects.mesh.scale.setScalar(radius);
-            objects.mesh.material.emissiveIntensity = selectedIndex === i ? 0.65 : 0.28;
+            objects.mesh.quaternion.identity();
+            objects.mesh.material.emissiveIntensity = selected ? 0.65 : 0.28;
             objects.halo.position.copy(position);
-            objects.halo.scale.setScalar(radius * (selectedIndex === i ? 2.65 : 2.1));
+            objects.halo.scale.setScalar(radius * (selected ? 2.65 : 2.1));
             const labelPosition = new THREE.Vector3(
                 body.x + radius * 1.25,
                 body.y,
@@ -242,7 +296,8 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
                 objects.label.style.top = `${(-labelPosition.y * 0.5 + 0.5) * stage.clientHeight}px`;
             }
 
-            const displayedVelocity = (!running && selectedIndex === i && pendingChanges[i] && velocityDrafts[i]) ? velocityDrafts[i] : body;
+            const displayedVelocity = (!running && selected && pendingChanges[i] && velocityDrafts[i])
+                ? velocityDrafts[i] : body;
             const velocity = new THREE.Vector3(displayedVelocity.vx, displayedVelocity.vy, displayedVelocity.vz);
             const magnitude = velocity.length();
             if (magnitude > 1e-12) velocity.multiplyScalar(1 / magnitude);
@@ -252,8 +307,6 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
             objects.arrow.setDirection(velocity);
             objects.arrow.setLength(arrowLength, Math.min(0.14, arrowLength * 0.3), Math.min(0.075, arrowLength * 0.16));
             objects.handle.position.copy(position).addScaledVector(velocity, arrowLength);
-            objects.handle.visible = selectedIndex === i && !running;
-            updateTrail(i);
         });
         byId("tb-time").textContent = formatNumber(time, 2) + " суток";
     }
@@ -278,9 +331,12 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
         byId("tb-preset").value = "custom";
     }
 
+    function hasTerminalEvent() {
+        return events.some(event => event.type === "collision" || event.type === "ejection");
+    }
+
     function updateStartControl() {
-        const eventStop = events.some(event => event.type === "collision" || event.type === "ejection");
-        byId("tb-start").disabled = hasPendingChanges() || eventStop;
+        byId("tb-start").disabled = hasPendingChanges() || hasTerminalEvent();
     }
 
     function markPendingChange() {
@@ -390,7 +446,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
         pendingChanges = {};
         selectedIndex = -1;
         controls.target.set(0, 0, 0);
-        camera.position.set(3.8, -5.8, 4.7);
+        camera.position.set(...(name === "collision" ? COLLISION_CAMERA_POSITION : DEFAULT_CAMERA_POSITION));
         controls.update();
         updateEditor();
         resetAll();
@@ -443,24 +499,55 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
         renderEvents();
     }
 
-    function detectEvents() {
-        let collision = false;
-        let ejection = false;
+    function beginImpact({ first, second }) {
+        const a = bodies[first];
+        const b = bodies[second];
+        const firstRadius = bodyRadius(a.m);
+        const sumOfRadii = firstRadius + bodyRadius(b.m);
+        const from = new THREE.Vector3(a.x, a.y, a.z);
+        const to = new THREE.Vector3(b.x, b.y, b.z);
+        const normal = new THREE.Vector3().subVectors(to, from);
+        if (normal.lengthSq() === 0) normal.set(a.vx - b.vx, a.vy - b.vy, a.vz - b.vz);
+        if (normal.lengthSq() === 0) normal.set(1, 0, 0);
+        normal.normalize();
 
-        for (let i = 0; i < bodies.length; i++) {
-            for (let j = i + 1; j < bodies.length; j++) {
-                const distance = Math.hypot(
-                    bodies[i].x - bodies[j].x,
-                    bodies[i].y - bodies[j].y,
-                    bodies[i].z - bodies[j].z
-                );
-                if (distance <= COLLISION_DISTANCE) {
-                    addEvent("collision", [i, j], `Столкновение тел ${i + 1} и ${j + 1}`);
-                    collision = true;
-                }
-            }
+        const point = new THREE.Vector3().lerpVectors(from, to, firstRadius / sumOfRadii);
+        const message = `Столкновение тел ${first + 1} и ${second + 1}`;
+        impact = {
+            indices: [first, second],
+            point,
+            rotation: new THREE.Quaternion().setFromUnitVectors(SPHERE_AXIS, normal),
+            startedAt: null,
+            duration: reduceMotion.matches ? 0 : IMPACT_DURATION_MS,
+            progress: 0
+        };
+        if (impact.duration) {
+            impactFlash.start(point, normal, sumOfRadii, COLORS[first], COLORS[second]);
         }
 
+        running = false;
+        timeAccumulator = 0;
+        blankPointer = null;
+        addEvent("collision", impact.indices, message);
+        clearSelection();
+        updateStartControl();
+        byId("tb-start").textContent = "Столкновение";
+        setStatus(message);
+    }
+
+    function updateImpact(now) {
+        if (!impact || impact.progress === 1) return;
+        impact.startedAt ??= now;
+        impact.progress = impact.duration ? clamp((now - impact.startedAt) / impact.duration, 0, 1) : 1;
+        impactFlash.update(impact.progress);
+        if (impact.progress === 1) {
+            setStatus("Модель остановлена");
+            showToast("Модель остановлена: обнаружено столкновение");
+        }
+    }
+
+    function detectOrbitalEvents() {
+        let ejection = false;
         for (let i = 0; i < bodies.length; i++) {
             if (eventKeys.has("ejection:" + i)) continue;
             const pair = bodies.filter((_, j) => j !== i);
@@ -515,15 +602,13 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
             addEvent("stable", [], "Предварительно устойчивое движение за 500 суток");
         }
 
-        if (collision || ejection) {
+        if (ejection) {
             running = false;
             timeAccumulator = 0;
             byId("tb-start").disabled = true;
-            byId("tb-start").textContent = collision ? "Столкновение" : "Выброс тела";
+            byId("tb-start").textContent = "Выброс тела";
             setStatus("Модель остановлена");
-            showToast(
-                collision ? "Модель остановлена: обнаружено столкновение" : "Модель остановлена: обнаружен выброс тела"
-            );
+            showToast("Модель остановлена: обнаружен выброс тела");
         }
     }
 
@@ -549,13 +634,20 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
     }
 
     function step() {
+        // Перекрывающиеся начальные сферы останавливаем до расчёта сил.
+        const initialContact = firstContact(bodies);
+        if (initialContact) {
+            beginImpact(initialContact);
+            return;
+        }
+
         // Шаг метода Рунге — Кутты четвёртого порядка.
         const k1 = derivatives(bodies);
         const k2 = derivatives(shift(bodies, k1, STEP_DAYS / 2));
         const k3 = derivatives(shift(bodies, k2, STEP_DAYS / 2));
         const k4 = derivatives(shift(bodies, k3, STEP_DAYS));
 
-        bodies = bodies.map((body, i) => ({
+        const nextBodies = bodies.map((body, i) => ({
             ...body,
             x: body.x + STEP_DAYS / 6 * (k1[i].x + 2 * k2[i].x + 2 * k3[i].x + k4[i].x),
             y: body.y + STEP_DAYS / 6 * (k1[i].y + 2 * k2[i].y + 2 * k3[i].y + k4[i].y),
@@ -565,12 +657,34 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
             vz: body.vz + STEP_DAYS / 6 * (k1[i].vz + 2 * k2[i].vz + 2 * k3[i].vz + k4[i].vz)
         }));
 
-        time += STEP_DAYS;
+        // При контакте откатываем неполный шаг к касанию.
+        const contact = firstContact(bodies, nextBodies);
+        if (contact) {
+            const { fraction } = contact;
+            const lerp = THREE.MathUtils.lerp;
+            bodies = bodies.map((body, i) => {
+                const next = nextBodies[i];
+                return {
+                    ...body,
+                    x: lerp(body.x, next.x, fraction),
+                    y: lerp(body.y, next.y, fraction),
+                    z: lerp(body.z, next.z, fraction),
+                    vx: lerp(body.vx, next.vx, fraction),
+                    vy: lerp(body.vy, next.vy, fraction),
+                    vz: lerp(body.vz, next.vz, fraction)
+                };
+            });
+            time += STEP_DAYS * fraction;
+        } else {
+            bodies = nextBodies;
+            time += STEP_DAYS;
+        }
         bodies.forEach((body, i) => {
             trails[i].push({ x: body.x, y: body.y, z: body.z });
             if (trails[i].length > TRAIL_MAX) trails[i].shift();
         });
-        detectEvents();
+        if (contact) beginImpact(contact);
+        else detectOrbitalEvents();
     }
 
     function energy() {
@@ -638,6 +752,11 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
         time = 0;
         timeAccumulator = 0;
         trails = bodies.map(body => [{ x: body.x, y: body.y, z: body.z }]);
+        if (impact) {
+            impact = null;
+            impactFlash.hide();
+            clearToast();
+        }
         clearEvents();
         byId("tb-start").disabled = false;
         byId("tb-start").textContent = "Запустить";
@@ -664,6 +783,17 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
         updateEditor();
     }
 
+    function releaseBodyPointer() {
+        const pointerId = bodyPointer?.id ?? vectorPointerId;
+        bodyPointer = null;
+        vectorPointerId = null;
+        dragBodyIndex = -1;
+        controls.enabled = true;
+        if (pointerId !== null && renderer.domElement.hasPointerCapture(pointerId)) {
+            renderer.domElement.releasePointerCapture(pointerId);
+        }
+    }
+
     function clearSelection() {
         if (selectedIndex < 0) return;
         const previousIndex = selectedIndex;
@@ -672,10 +802,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
         delete pendingChanges[previousIndex];
         updateStartControl();
         selectedIndex = -1;
-        bodyPointer = null;
-        vectorPointer = false;
-        dragBodyIndex = -1;
-        controls.enabled = true;
+        releaseBodyPointer();
         updateEditor();
         if (hadChanges) byId("tb-status").textContent = "Неподтверждённые изменения отменены";
     }
@@ -760,13 +887,13 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
     // Перетаскивание идёт в плоскости экрана через центр тела.
     renderer.domElement.addEventListener("pointerdown", event => {
-        if (event.button !== 0) return;
+        if (event.button !== 0 || impact || bodyPointer || vectorPointerId !== null) return;
         setPointerRay(event);
 
         if (selectedIndex >= 0 && !running) {
             const handleHit = raycaster.intersectObject(bodyObjects[selectedIndex].handle, false)[0];
             if (handleHit) {
-                vectorPointer = true;
+                vectorPointerId = event.pointerId;
                 dragBodyIndex = selectedIndex;
                 const origin = bodyObjects[selectedIndex].mesh.position;
                 dragPlane.setFromNormalAndCoplanarPoint(camera.getWorldDirection(new THREE.Vector3()), origin);
@@ -777,9 +904,8 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
             }
         }
 
-        const hits = raycaster.intersectObjects(bodyObjects.map(item => item.mesh), false);
-        if (hits.length) {
-            const index = hits[0].object.userData.bodyIndex;
+        const index = bodyAtPointer();
+        if (index >= 0) {
             if (selectedIndex >= 0 && selectedIndex !== index) {
                 const hadChanges = !!pendingChanges[selectedIndex];
                 delete velocityDrafts[selectedIndex];
@@ -807,7 +933,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
             blankPointer.moved = true;
         }
 
-        if (vectorPointer && dragBodyIndex >= 0 && !running) {
+        if (vectorPointerId === event.pointerId && !running) {
             const point = pointOnDragPlane(event);
             if (!point) return;
             const origin = bodyObjects[dragBodyIndex].mesh.position;
@@ -822,7 +948,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
             return;
         }
 
-        if (!bodyPointer || dragBodyIndex < 0) return;
+        if (bodyPointer?.id !== event.pointerId) return;
         const moved = Math.hypot(event.clientX - bodyPointer.x, event.clientY - bodyPointer.y);
         if (moved > 4) bodyPointer.moved = true;
         if (!bodyPointer.moved) return;
@@ -842,23 +968,11 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
     });
 
     function finishPointer(event) {
-        if (bodyPointer) {
-            bodyPointer = null;
-            dragBodyIndex = -1;
-            controls.enabled = true;
-            if (renderer.domElement.hasPointerCapture(event.pointerId)) {
-                renderer.domElement.releasePointerCapture(event.pointerId);
-            }
-            render();
-        }
-        if (vectorPointer) {
-            vectorPointer = false;
-            dragBodyIndex = -1;
-            controls.enabled = true;
-            if (renderer.domElement.hasPointerCapture(event.pointerId)) {
-                renderer.domElement.releasePointerCapture(event.pointerId);
-            }
-            updateEditor();
+        if (bodyPointer?.id === event.pointerId || vectorPointerId === event.pointerId) {
+            const editingVelocity = vectorPointerId !== null;
+            releaseBodyPointer();
+            if (editingVelocity) updateEditor();
+            else render();
         }
         if (blankPointer) {
             const wasClick = !blankPointer.moved;
@@ -921,6 +1035,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
     byId("tb-velocity-all").onclick = () => applyVelocity(true);
     byId("tb-preset").onchange = event => preset(event.target.value);
     byId("tb-start").onclick = () => {
+        if (hasTerminalEvent()) return;
         if (hasPendingChanges()) {
             showToast("Сначала примени параметры или нажми «Отмена».");
             return;
@@ -937,11 +1052,11 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
     };
 
     window.addEventListener("keydown", event => {
-        if (event.key !== "Escape") return;
+        if (event.key !== "Escape" || hasTerminalEvent()) return;
         running = false;
         timeAccumulator = 0;
-        byId("tb-start").disabled = false;
         clearSelection();
+        updateStartControl();
         byId("tb-start").textContent = "Продолжить";
         byId("tb-status").textContent = "Симуляция остановлена";
     });
@@ -954,10 +1069,11 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
             timeAccumulator += elapsed * speed * 2;
             let iterations = 0;
             while (running && timeAccumulator >= STEP_DAYS && iterations++ < 500) {
-                step();
                 timeAccumulator -= STEP_DAYS;
+                step();
             }
         }
+        updateImpact(now);
         controls.update();
         render();
         requestAnimationFrame(frame);
