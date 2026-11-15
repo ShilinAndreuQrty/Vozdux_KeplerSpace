@@ -1,7 +1,8 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { bodyRadius, firstContact } from "./three-body-collision.js";
-import { createImpactFlash } from "./three-body-impact.js";
+import { bodyRadius, firstContact, stateAtContact } from "./three-body-collision.js";
+import { createParticleImpact } from "./three-body-particles.js";
+import { createParticleView } from "./three-body-particle-view.js";
 import { clearToast, showToast } from "./three-body-toast.js";
 
 (() => {
@@ -24,8 +25,6 @@ import { clearToast, showToast } from "./three-body-toast.js";
     const TRAIL_MAX = 20000;
     const VECTOR_SCALE = 28;
     const MIN_ARROW_LENGTH = 0.1;
-    const IMPACT_DURATION_MS = 720;
-    const SPHERE_AXIS = new THREE.Vector3(0, 1, 0);
     const DEFAULT_CAMERA_POSITION = [3.8, -5.8, 4.7];
     const COLLISION_CAMERA_POSITION = [0.9, -3.2, 2.0];
     const COLORS = [0x8ddcff, 0xffc58e, 0xc7a5ff];
@@ -76,8 +75,7 @@ import { clearToast, showToast } from "./three-body-toast.js";
 
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x080e1b);
-    const impactFlash = createImpactFlash(scene);
-    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const particleView = createParticleView(scene, COLORS);
 
     const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 1000);
     camera.up.set(0, 0, 1);
@@ -247,17 +245,6 @@ import { clearToast, showToast } from "./three-body-toast.js";
         line.geometry.computeBoundingSphere();
     }
 
-    function squashBody(mesh, radius) {
-        // Сжимаем вдоль линии удара и сохраняем точку контакта.
-        const remaining = 1 - impact.progress;
-        const compression = 0.53 + 0.47 * remaining ** 3;
-        const width = radius / Math.sqrt(compression);
-        mesh.scale.set(width, radius * compression, width);
-        mesh.quaternion.copy(impact.rotation);
-        mesh.position.lerp(impact.point, 1 - compression);
-        mesh.material.emissiveIntensity = 0.28 + 0.8 * remaining ** 3;
-    }
-
     function updateVisuals() {
         bodies.forEach((body, i) => {
             const objects = bodyObjects[i];
@@ -266,19 +253,18 @@ import { clearToast, showToast } from "./three-body-toast.js";
             const struck = impact !== null && impact.indices.includes(i);
             const selected = selectedIndex === i;
             objects.mesh.position.copy(position);
+            objects.mesh.visible = !struck;
             objects.halo.visible = !struck;
             objects.arrow.visible = !struck;
             objects.handle.visible = !struck && selected && !running;
             updateTrail(i);
 
             if (struck) {
-                squashBody(objects.mesh, radius);
                 objects.label.style.display = "none";
                 return;
             }
 
             objects.mesh.scale.setScalar(radius);
-            objects.mesh.quaternion.identity();
             objects.mesh.material.emissiveIntensity = selected ? 0.65 : 0.28;
             objects.halo.position.copy(position);
             objects.halo.scale.setScalar(radius * (selected ? 2.65 : 2.1));
@@ -499,50 +485,33 @@ import { clearToast, showToast } from "./three-body-toast.js";
         renderEvents();
     }
 
-    function beginImpact({ first, second }) {
-        const a = bodies[first];
-        const b = bodies[second];
-        const firstRadius = bodyRadius(a.m);
-        const sumOfRadii = firstRadius + bodyRadius(b.m);
-        const from = new THREE.Vector3(a.x, a.y, a.z);
-        const to = new THREE.Vector3(b.x, b.y, b.z);
-        const normal = new THREE.Vector3().subVectors(to, from);
-        if (normal.lengthSq() === 0) normal.set(a.vx - b.vx, a.vy - b.vy, a.vz - b.vz);
-        if (normal.lengthSq() === 0) normal.set(1, 0, 0);
-        normal.normalize();
-
-        const point = new THREE.Vector3().lerpVectors(from, to, firstRadius / sumOfRadii);
-        const message = `Столкновение тел ${first + 1} и ${second + 1}`;
-        impact = {
-            indices: [first, second],
-            point,
-            rotation: new THREE.Quaternion().setFromUnitVectors(SPHERE_AXIS, normal),
-            startedAt: null,
-            duration: reduceMotion.matches ? 0 : IMPACT_DURATION_MS,
-            progress: 0
-        };
-        if (impact.duration) {
-            impactFlash.start(point, normal, sumOfRadii, COLORS[first], COLORS[second]);
-        }
-
+    function beginImpact(contact) {
+        const { first, second } = contact;
+        impact = createParticleImpact(bodies, contact, 3, G);
         running = false;
         timeAccumulator = 0;
         blankPointer = null;
-        addEvent("collision", impact.indices, message);
+        addEvent("collision", impact.indices, `Столкновение тел ${first + 1} и ${second + 1}`);
         clearSelection();
         updateStartControl();
         byId("tb-start").textContent = "Столкновение";
-        setStatus(message);
+        setStatus("Столкновение · движение обломков");
     }
 
     function updateImpact(now) {
-        if (!impact || impact.progress === 1) return;
-        impact.startedAt ??= now;
-        impact.progress = impact.duration ? clamp((now - impact.startedAt) / impact.duration, 0, 1) : 1;
-        impactFlash.update(impact.progress);
-        if (impact.progress === 1) {
+        if (!impact || impact.finished) return;
+        const days = impact.advance(now);
+        const { survivorIndex: index, survivor } = impact;
+        if (days > 0) {
+            time += days;
+            bodies[index] = survivor;
+            trails[index].push({ x: survivor.x, y: survivor.y, z: survivor.z });
+            if (trails[index].length > TRAIL_MAX) trails[index].shift();
+        }
+        particleView.render(impact);
+        if (impact.finished) {
             setStatus("Модель остановлена");
-            showToast("Модель остановлена: обнаружено столкновение");
+            showToast("Модель остановлена после столкновения");
         }
     }
 
@@ -659,26 +628,8 @@ import { clearToast, showToast } from "./three-body-toast.js";
 
         // При контакте откатываем неполный шаг к касанию.
         const contact = firstContact(bodies, nextBodies);
-        if (contact) {
-            const { fraction } = contact;
-            const lerp = THREE.MathUtils.lerp;
-            bodies = bodies.map((body, i) => {
-                const next = nextBodies[i];
-                return {
-                    ...body,
-                    x: lerp(body.x, next.x, fraction),
-                    y: lerp(body.y, next.y, fraction),
-                    z: lerp(body.z, next.z, fraction),
-                    vx: lerp(body.vx, next.vx, fraction),
-                    vy: lerp(body.vy, next.vy, fraction),
-                    vz: lerp(body.vz, next.vz, fraction)
-                };
-            });
-            time += STEP_DAYS * fraction;
-        } else {
-            bodies = nextBodies;
-            time += STEP_DAYS;
-        }
+        bodies = contact ? stateAtContact(bodies, nextBodies, contact.fraction) : nextBodies;
+        time += STEP_DAYS * (contact?.fraction ?? 1);
         bodies.forEach((body, i) => {
             trails[i].push({ x: body.x, y: body.y, z: body.z });
             if (trails[i].length > TRAIL_MAX) trails[i].shift();
@@ -754,7 +705,7 @@ import { clearToast, showToast } from "./three-body-toast.js";
         trails = bodies.map(body => [{ x: body.x, y: body.y, z: body.z }]);
         if (impact) {
             impact = null;
-            impactFlash.hide();
+            particleView.hide();
             clearToast();
         }
         clearEvents();

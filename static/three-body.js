@@ -1,4 +1,6 @@
-import { showToast } from "./three-body-toast.js";
+import { bodyRadius, firstContact, stateAtContact } from "./three-body-collision.js";
+import { createParticleImpact } from "./three-body-particles.js";
+import { clearToast, showToast } from "./three-body-toast.js";
 
 (() => {
     const canvas = document.getElementById("tb-canvas");
@@ -14,11 +16,11 @@ import { showToast } from "./three-body-toast.js";
     const KM_S_TO_AU_DAY = DAY_S / AU_KM;
     const SQRT_G = Math.sqrt(G);
     const STEP_DAYS = 0.01;
-    const COLLISION_DISTANCE = 0.01;
     const EJECTION_DISTANCE = 10;
     const STABILITY_CHECK_DAYS = 500;
     const EJECTION_CONFIRM_DAYS = 20;
     const BODY_COLORS = ["#8ddcff", "#ffc58e", "#c7a5ff"];
+    const PARTICLE_COLORS = BODY_COLORS.map(color => color.slice(1).match(/../g).map(hex => parseInt(hex, 16)));
 
     // Порядок значений в пресете — x, y, vx, vy, масса.
     const PRESETS = {
@@ -31,6 +33,11 @@ import { showToast } from "./three-body-toast.js";
             [0, 0, 0, 0, 1],
             [1.2, 0, 0, 0, 1],
             [0.6, 1.0392304845, 0, 0, 1]
+        ],
+        collision: [
+            [-1.1, 0, 0.24, 0, 1],
+            [1.1, 0, -0.24, 0, 1],
+            [0, 1.55, 0, 0.12, 0.6]
         ],
         chaos: [
             [-1.05, 0.25, 0.12, 0.55, 1],
@@ -61,6 +68,7 @@ import { showToast } from "./three-body-toast.js";
     let ejectionSince = {};
     let maxSeparation = 0;
     let stabilityReported = false;
+    let impact = null;
 
     const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
     const formatNumber = (value, digits = 3) => Number(value).toFixed(digits).replace(".", ",");
@@ -77,10 +85,12 @@ import { showToast } from "./three-body-toast.js";
         return Object.keys(pendingChanges).length > 0;
     }
 
-    function updateStartControl() {
-        const eventStop = events.some(event => event.type === "collision" || event.type === "ejection");
+    function hasTerminalEvent() {
+        return events.some(event => event.type === "collision" || event.type === "ejection");
+    }
 
-        byId("tb-start").disabled = hasPendingChanges() || eventStop;
+    function updateStartControl() {
+        byId("tb-start").disabled = hasPendingChanges() || hasTerminalEvent();
     }
 
     function markPendingChange() {
@@ -233,20 +243,37 @@ import { showToast } from "./three-body-toast.js";
         renderEvents();
     }
 
-    function detectEvents() {
-        let collision = false;
-        let ejection = false;
+    function beginImpact(contact) {
+        const { first, second } = contact;
+        impact = createParticleImpact(bodies, contact, 2, G);
+        running = false;
+        timeAccumulator = 0;
+        addEvent("collision", impact.indices, `Столкновение тел ${first + 1} и ${second + 1}`);
+        finishPointer();
+        clearSelection();
+        updateStartControl();
+        byId("tb-start").textContent = "Столкновение";
+        setStatus("Столкновение · движение обломков");
+    }
 
-        for (let i = 0; i < bodies.length; i++) {
-            for (let j = i + 1; j < bodies.length; j++) {
-                const distance = Math.hypot(bodies[i].x - bodies[j].x, bodies[i].y - bodies[j].y);
-
-                if (distance <= COLLISION_DISTANCE) {
-                    addEvent("collision", [i, j], "Столкновение тел " + (i + 1) + " и " + (j + 1));
-                    collision = true;
-                }
-            }
+    function updateImpact(now) {
+        if (!impact || impact.finished) return;
+        const days = impact.advance(now);
+        const { survivorIndex: index, survivor } = impact;
+        if (days > 0) {
+            time += days;
+            bodies[index] = survivor;
+            trails[index].push({ x: survivor.x, y: survivor.y });
+            if (trails[index].length > 2000) trails[index].shift();
         }
+        if (impact.finished) {
+            setStatus("Модель остановлена");
+            showToast("Модель остановлена после столкновения");
+        }
+    }
+
+    function detectOrbitalEvents() {
+        let ejection = false;
 
         for (let i = 0; i < bodies.length; i++) {
             if (eventKeys.has("ejection:" + i)) continue;
@@ -310,18 +337,14 @@ import { showToast } from "./three-body-toast.js";
             addEvent("stable", [], "Предварительно устойчивое движение за 500 суток");
         }
 
-        if (collision || ejection) {
+        if (ejection) {
             running = false;
             timeAccumulator = 0;
 
             byId("tb-start").disabled = true;
-            byId("tb-start").textContent = collision ? "Столкновение" : "Выброс тела";
+            byId("tb-start").textContent = "Выброс тела";
             setStatus("Модель остановлена");
-            showToast(
-                collision
-                    ? "Модель остановлена: обнаружено столкновение"
-                    : "Модель остановлена: обнаружен выброс тела"
-            );
+            showToast("Модель остановлена: обнаружен выброс тела");
         }
     }
 
@@ -352,13 +375,19 @@ import { showToast } from "./three-body-toast.js";
     }
 
     function step() {
+        const initialContact = firstContact(bodies);
+        if (initialContact) {
+            beginImpact(initialContact);
+            return;
+        }
+
         // Шаг метода Рунге — Кутты четвёртого порядка.
         const k1 = derivatives(bodies);
         const k2 = derivatives(shift(bodies, k1, STEP_DAYS / 2));
         const k3 = derivatives(shift(bodies, k2, STEP_DAYS / 2));
         const k4 = derivatives(shift(bodies, k3, STEP_DAYS));
 
-        bodies = bodies.map((body, i) => ({
+        const nextBodies = bodies.map((body, i) => ({
             ...body,
             x: body.x + (STEP_DAYS / 6) * (k1[i].x + 2 * k2[i].x + 2 * k3[i].x + k4[i].x),
             y: body.y + (STEP_DAYS / 6) * (k1[i].y + 2 * k2[i].y + 2 * k3[i].y + k4[i].y),
@@ -366,14 +395,17 @@ import { showToast } from "./three-body-toast.js";
             vy: body.vy + (STEP_DAYS / 6) * (k1[i].vy + 2 * k2[i].vy + 2 * k3[i].vy + k4[i].vy)
         }));
 
-        time += STEP_DAYS;
+        const contact = firstContact(bodies, nextBodies);
+        bodies = contact ? stateAtContact(bodies, nextBodies, contact.fraction) : nextBodies;
+        time += STEP_DAYS * (contact?.fraction ?? 1);
 
         bodies.forEach((body, i) => {
             trails[i].push({ x: body.x, y: body.y });
             if (trails[i].length > 2000) trails[i].shift();
         });
 
-        detectEvents();
+        if (contact) beginImpact(contact);
+        else detectOrbitalEvents();
     }
 
     function energy() {
@@ -491,8 +523,9 @@ import { showToast } from "./three-body-toast.js";
             context.stroke();
         });
         bodies.forEach((body, i) => {
+            if (impact?.indices.includes(i)) return;
             const point = toScreen(body);
-            const radius = 10 + Math.min(7, Math.sqrt(body.m) * 2);
+            const radius = bodyRadius(body.m) * viewport.scale;
             const glow = context.createRadialGradient(point.x, point.y, 1, point.x, point.y, radius * 3);
             glow.addColorStop(0, BODY_COLORS[i] + "99");
             glow.addColorStop(1, BODY_COLORS[i] + "00");
@@ -526,10 +559,25 @@ import { showToast } from "./three-body-toast.js";
                 BODY_COLORS[i]
             );
         });
+        if (impact) {
+            const [first, second] = impact.indices.map(index => PARTICLE_COLORS[index]);
+            for (const particle of impact.particles) {
+                const point = toScreen(particle);
+                const channels = first.map((channel, i) => Math.round(channel + (second[i] - channel) * particle.mix));
+                context.fillStyle = `rgb(${channels.join(",")})`;
+                context.beginPath();
+                context.arc(point.x, point.y, Math.max(0.85, viewport.scale * particle.size), 0, 2 * Math.PI);
+                context.fill();
+            }
+        }
         byId("tb-time").textContent = formatNumber(time, 2) + " суток";
     }
 
     function resetSimulation() {
+        if (impact) {
+            impact = null;
+            clearToast();
+        }
         running = false;
         time = 0;
         timeAccumulator = 0;
@@ -537,6 +585,7 @@ import { showToast } from "./three-body-toast.js";
         clearEvents();
 
         byId("tb-start").disabled = false;
+        byId("tb-start").textContent = "Запустить";
         updateStartControl();
         setStatus("Модель остановлена");
         render();
@@ -681,6 +730,7 @@ import { showToast } from "./three-body-toast.js";
         render();
     }
     canvas.addEventListener("pointerdown", event => {
+        if (impact) return;
         const bounds = canvas.getBoundingClientRect();
         const pointer = { x: event.clientX - bounds.left, y: event.clientY - bounds.top };
         if (selectedIndex >= 0) {
@@ -702,7 +752,7 @@ import { showToast } from "./three-body-toast.js";
         }
         const bodyIndex = bodies.findIndex(body => {
             const screenPosition = toScreen(body);
-            return Math.hypot(screenPosition.x - pointer.x, screenPosition.y - pointer.y) < 19;
+            return Math.hypot(screenPosition.x - pointer.x, screenPosition.y - pointer.y) <= bodyRadius(body.m) * viewport.scale;
         });
         if (bodyIndex >= 0) {
             if (bodyIndex !== selectedIndex && selectedIndex >= 0) {
@@ -835,6 +885,7 @@ import { showToast } from "./three-body-toast.js";
     byId("tb-velocity-all").onclick = () => applyVelocity(true);
     byId("tb-preset").onchange = event => preset(event.target.value);
     byId("tb-start").onclick = () => {
+        if (hasTerminalEvent()) return;
         if (hasPendingChanges()) {
             showToast("Сначала примени параметры или нажми «Отмена».");
             return;
@@ -859,16 +910,17 @@ import { showToast } from "./three-body-toast.js";
             let iterations = 0;
 
             while (running && timeAccumulator >= STEP_DAYS && iterations++ < 500) {
-                step();
                 timeAccumulator -= STEP_DAYS;
+                step();
             }
         }
 
+        updateImpact(now);
         render();
         requestAnimationFrame(frame);
     }
     window.addEventListener("keydown", event => {
-        if (event.key !== "Escape") return;
+        if (event.key !== "Escape" || hasTerminalEvent()) return;
 
         running = false;
         timeAccumulator = 0;

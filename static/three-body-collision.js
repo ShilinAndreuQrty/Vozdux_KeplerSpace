@@ -34,8 +34,8 @@ export function firstContact(bodies, nextBodies = bodies) {
             const b = bodies[second];
             const nextB = nextBodies[second];
             const fraction = contactFraction(
-                b.x - a.x, b.y - a.y, b.z - a.z, radii[first] + radii[second],
-                nextB.x - nextA.x, nextB.y - nextA.y, nextB.z - nextA.z
+                b.x - a.x, b.y - a.y, (b.z ?? 0) - (a.z ?? 0), radii[first] + radii[second],
+                nextB.x - nextA.x, nextB.y - nextA.y, (nextB.z ?? 0) - (nextA.z ?? 0)
             );
             if (fraction === null || (contact && fraction >= contact.fraction)) continue;
             contact = { first, second, fraction };
@@ -43,4 +43,18 @@ export function firstContact(bodies, nextBodies = bodies) {
         }
     }
     return contact;
+}
+
+export function stateAtContact(bodies, nextBodies, fraction) {
+    return bodies.map((body, index) => {
+        const next = nextBodies[index];
+        const lerp = (start, end) => start + fraction * (end - start);
+        return {
+            ...body,
+            x: lerp(body.x, next.x), y: lerp(body.y, next.y),
+            z: lerp(body.z ?? 0, next.z ?? 0),
+            vx: lerp(body.vx, next.vx), vy: lerp(body.vy, next.vy),
+            vz: lerp(body.vz ?? 0, next.vz ?? 0)
+        };
+    });
 }
