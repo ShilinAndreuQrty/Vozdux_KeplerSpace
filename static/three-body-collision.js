@@ -1,4 +1,5 @@
 export function bodyRadius(mass) {
+    // Один радиус задаёт видимый размер, область выбора и момент касания.
     return 0.075 + Math.min(0.055, Math.cbrt(Math.max(mass, 0.001)) * 0.025);
 }
 
@@ -46,6 +47,7 @@ export function firstContact(bodies, nextBodies = bodies) {
 }
 
 export function stateAtContact(bodies, nextBodies, fraction) {
+    // Останавливаем шаг на первом касании и интерполируем скорость.
     return bodies.map((body, index) => {
         const next = nextBodies[index];
         const lerp = (start, end) => start + fraction * (end - start);

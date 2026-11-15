@@ -3,14 +3,17 @@ import { bodyRadius } from "./three-body-collision.js";
 const DURATION_MS = 5000;
 const STEPS = 300;
 const CAPTURE_STEP = 228;
+const BASE_DURATION_DAYS = 19;
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 const SURFACE_PAIRS = 48;
 const VOLUME_PAIRS = 168;
 const BELT_PAIRS = 384;
 const TRACE_STRIDE = 19;
+const PARTICLES_PER_DISK = 880;
+const PARTICLES_PER_SPHERE = 2 * (SURFACE_PAIRS + VOLUME_PAIRS + BELT_PAIRS);
 
-export const MAX_PARTICLES = 4 * (SURFACE_PAIRS + VOLUME_PAIRS + BELT_PAIRS);
-export const MAX_TRACES = 4 * Math.ceil((SURFACE_PAIRS + VOLUME_PAIRS + BELT_PAIRS) / TRACE_STRIDE);
+export const MAX_PARTICLES = 2 * PARTICLES_PER_SPHERE;
+export const MAX_TRACES = 4 * Math.ceil(PARTICLES_PER_SPHERE / (2 * TRACE_STRIDE));
 export const TAIL_POINTS = 8;
 
 function cross([ax, ay, az], [bx, by, bz]) {
@@ -21,6 +24,7 @@ function unit(vector, length = Math.hypot(...vector)) {
     return vector.map(component => component / length);
 }
 
+// При касательном ударе плоскость вращения задаёт относительное движение ядер.
 function encounterFrame(a, b) {
     const delta = [b.x - a.x, b.y - a.y, b.z - a.z];
     const velocity = [b.vx - a.vx, b.vy - a.vy, b.vz - a.vz];
@@ -35,8 +39,9 @@ function encounterFrame(a, b) {
 }
 
 function seedDebris(core, frame, group, dimensions, gravity) {
-    const count = dimensions === 3 ? MAX_PARTICLES / 2 : 880;
+    const count = dimensions === 3 ? PARTICLES_PER_SPHERE : PARTICLES_PER_DISK;
     const mass = core.m / count;
+    // Для суммы объёмов или площадей достаточно складывать степени радиусов.
     const measure = core.radius ** dimensions / count;
     const { along, across, normal } = frame;
     const spin = frame.glancing || group === 0 ? 1 : -1;
@@ -90,11 +95,18 @@ function kickFrom(body, source, gravityStep, diskField) {
     const dz = source.z - body.z;
     const r2 = dx * dx + dy * dy + dz * dz + source.softeningSquared;
     // Внутри облака поле логарифмическое, вдали оно убывает как 1/r².
-    const distance = diskField ? Math.max(source.radius, Math.sqrt(r2) / 1.6) : Math.sqrt(r2);
-    const factor = gravityStep * source.m / (r2 * distance);
+    const softenedDistance = Math.sqrt(r2);
+    const falloff = diskField ? Math.max(source.radius, softenedDistance / 1.6) : softenedDistance;
+    const factor = gravityStep * source.m / (r2 * falloff);
     body.vx += dx * factor;
     body.vy += dy * factor;
     body.vz += dz * factor;
+}
+
+function kickDebris(particle, [first, second, survivor], halfKick) {
+    kickFrom(particle, first, halfKick, true);
+    kickFrom(particle, second, halfKick, true);
+    kickFrom(particle, survivor, halfKick, false);
 }
 
 function kickCenters(centers, gravityStep) {
@@ -199,7 +211,8 @@ export function createParticleImpact(bodies, { first, second }, dimensions, grav
     }
 
     const scale = Math.min(1.5, Math.sqrt((sumOfRadii / 0.2) ** 3 * 2 / (mass + survivor.m)));
-    const dt = 19 * scale / STEPS;
+    // Внешний таймер держит пять секунд, шаг модели зависит от масс и размеров.
+    const dt = BASE_DURATION_DAYS * scale / STEPS;
     const halfKick = gravity * dt / 2;
     const particles = [
         ...seedDebris(a, frame, 0, dimensions, gravity),
@@ -217,9 +230,7 @@ export function createParticleImpact(bodies, { first, second }, dimensions, grav
             while (steps < target) {
                 // Полушаги ускорения до и после переноса удерживают орбиты.
                 for (const particle of particles) {
-                    kickFrom(particle, a, halfKick, true);
-                    kickFrom(particle, b, halfKick, true);
-                    kickFrom(particle, survivor, halfKick, false);
+                    kickDebris(particle, centers, halfKick);
                     move(particle, dt);
                 }
                 kickCenters(centers, halfKick);
@@ -227,9 +238,7 @@ export function createParticleImpact(bodies, { first, second }, dimensions, grav
                 kickCenters(centers, halfKick);
                 dampEncounter(a, b, dt);
                 for (const particle of particles) {
-                    kickFrom(particle, a, halfKick, true);
-                    kickFrom(particle, b, halfKick, true);
-                    kickFrom(particle, survivor, halfKick, false);
+                    kickDebris(particle, centers, halfKick);
                 }
                 if (steps >= CAPTURE_STEP) {
                     updateRemnant(remnant, a, b);

@@ -51,21 +51,20 @@ export function createParticleView(scene, colors) {
     const palette = colors.map(color => new THREE.Color(color));
     return {
         render({ indices, particles, remnant }) {
-            const [first, second] = indices.map(index => palette[index]);
-            const colors = [first, second];
+            const pairColors = indices.map(index => palette[index]);
             points.visible = particles.length > 0;
             tails.visible = points.visible;
             settled.visible = remnant.m > 0;
             if (settled.visible) {
                 settled.position.set(remnant.x, remnant.y, remnant.z);
                 settled.scale.setScalar(Math.cbrt(remnant.measure));
-                settled.material.color.copy(first).lerp(second, remnant.mix);
+                settled.material.color.copy(pairColors[0]).lerp(pairColors[1], remnant.mix);
             }
             if (!points.visible) return;
 
             let vertex = 0;
             particles.forEach((particle, i) => {
-                const color = colors[particle.group];
+                const color = pairColors[particle.group];
                 dots.position.setXYZ(i, particle.x, particle.y, particle.z);
                 dots.color.setXYZ(i, color.r, color.g, color.b);
                 const tail = particle.tail;
@@ -78,6 +77,7 @@ export function createParticleView(scene, colors) {
                     }
                 }
             });
+            // Отрисовываем только точки и сегменты, записанные в этом кадре.
             dots.geometry.setDrawRange(0, particles.length);
             dots.position.needsUpdate = true;
             dots.color.needsUpdate = true;

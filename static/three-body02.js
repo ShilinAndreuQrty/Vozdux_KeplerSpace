@@ -29,7 +29,6 @@ import { clearToast, showToast } from "./three-body-toast.js";
     const COLLISION_CAMERA_POSITION = [0.9, -3.2, 2.0];
     const GRAZING_CAMERA_POSITION = [0.85, -1.6, 2.55];
     const COLORS = [0x8ddcff, 0xffc58e, 0xc7a5ff];
-    const COLOR_CSS = ["#8ddcff", "#ffc58e", "#c7a5ff"];
 
     // Порядок значений в пресете — x, y, z, vx, vy, vz, масса.
     const PRESETS = {
@@ -71,7 +70,7 @@ import { clearToast, showToast } from "./three-body-toast.js";
     let bodyPointer = null;
     let vectorPointerId = null;
     let blankPointer = null;
-    let dragPlane = new THREE.Plane();
+    const dragPlane = new THREE.Plane();
     let dragBodyIndex = -1;
     let activePreset = "figure8";
     let ejectionSince = {};
@@ -495,8 +494,15 @@ import { clearToast, showToast } from "./three-body-toast.js";
         renderEvents();
     }
 
+    function appendTrailPoint(body, index) {
+        const trail = trails[index];
+        trail.push({ x: body.x, y: body.y, z: body.z });
+        if (trail.length > TRAIL_MAX) trail.shift();
+    }
+
     function beginImpact(contact) {
         const { first, second } = contact;
+        // После касания время ведёт модель обломков.
         impact = createParticleImpact(bodies, contact, 3, G);
         running = false;
         timeAccumulator = 0;
@@ -515,8 +521,7 @@ import { clearToast, showToast } from "./three-body-toast.js";
         if (days > 0) {
             time += days;
             bodies[index] = survivor;
-            trails[index].push({ x: survivor.x, y: survivor.y, z: survivor.z });
-            if (trails[index].length > TRAIL_MAX) trails[index].shift();
+            appendTrailPoint(survivor, index);
         }
         particleView.render(impact);
         if (impact.finished) {
@@ -636,34 +641,12 @@ import { clearToast, showToast } from "./three-body-toast.js";
             vz: body.vz + STEP_DAYS / 6 * (k1[i].vz + 2 * k2[i].vz + 2 * k3[i].vz + k4[i].vz)
         }));
 
-        // При контакте откатываем неполный шаг к касанию.
         const contact = firstContact(bodies, nextBodies);
         bodies = contact ? stateAtContact(bodies, nextBodies, contact.fraction) : nextBodies;
         time += STEP_DAYS * (contact?.fraction ?? 1);
-        bodies.forEach((body, i) => {
-            trails[i].push({ x: body.x, y: body.y, z: body.z });
-            if (trails[i].length > TRAIL_MAX) trails[i].shift();
-        });
+        bodies.forEach(appendTrailPoint);
         if (contact) beginImpact(contact);
         else detectOrbitalEvents();
-    }
-
-    function energy() {
-        let total = 0;
-        bodies.forEach(body => {
-            total += 0.5 * body.m * (body.vx ** 2 + body.vy ** 2 + body.vz ** 2);
-        });
-        for (let i = 0; i < bodies.length; i++) {
-            for (let j = i + 1; j < bodies.length; j++) {
-                const distance = Math.hypot(
-                    bodies[j].x - bodies[i].x,
-                    bodies[j].y - bodies[i].y,
-                    bodies[j].z - bodies[i].z
-                );
-                total -= G * bodies[i].m * bodies[j].m / Math.max(distance, 1e-9);
-            }
-        }
-        return total;
     }
 
     // Стрелка показывает черновик скорости до применения параметров.

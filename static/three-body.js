@@ -19,8 +19,11 @@ import { clearToast, showToast } from "./three-body-toast.js";
     const EJECTION_DISTANCE = 10;
     const STABILITY_CHECK_DAYS = 500;
     const EJECTION_CONFIRM_DAYS = 20;
+    const TRAIL_MAX = 2000;
     const BODY_COLORS = ["#8ddcff", "#ffc58e", "#c7a5ff"];
-    const PARTICLE_COLORS = BODY_COLORS.map(color => color.slice(1).match(/../g).map(hex => parseInt(hex, 16)));
+    const BODY_COLORS_RGB = BODY_COLORS.map(color =>
+        color.slice(1).match(/../g).map(hex => parseInt(hex, 16))
+    );
 
     // Порядок значений в пресете — x, y, vx, vy, масса.
     const PRESETS = {
@@ -43,11 +46,6 @@ import { clearToast, showToast } from "./three-body-toast.js";
             [-0.85, 0, 0.34, -0.165, 1],
             [0.85, 0, -0.34, 0.165, 1],
             [0, 2.15, 0, 0.12, 0.6]
-        ],
-        chaos: [
-            [-1.05, 0.25, 0.12, 0.55, 1],
-            [0.82, 0.52, -0.28, -0.12, 1],
-            [0.12, -0.82, 0.34, -0.18, 1]
         ]
     };
     let bodies = [];
@@ -249,8 +247,15 @@ import { clearToast, showToast } from "./three-body-toast.js";
         renderEvents();
     }
 
+    function appendTrailPoint(body, index) {
+        const trail = trails[index];
+        trail.push({ x: body.x, y: body.y });
+        if (trail.length > TRAIL_MAX) trail.shift();
+    }
+
     function beginImpact(contact) {
         const { first, second } = contact;
+        // После касания время ведёт модель обломков.
         impact = createParticleImpact(bodies, contact, 2, G);
         running = false;
         timeAccumulator = 0;
@@ -269,8 +274,7 @@ import { clearToast, showToast } from "./three-body-toast.js";
         if (days > 0) {
             time += days;
             bodies[index] = survivor;
-            trails[index].push({ x: survivor.x, y: survivor.y });
-            if (trails[index].length > 2000) trails[index].shift();
+            appendTrailPoint(survivor, index);
         }
         if (impact.finished) {
             setStatus("Модель остановлена");
@@ -405,26 +409,10 @@ import { clearToast, showToast } from "./three-body-toast.js";
         bodies = contact ? stateAtContact(bodies, nextBodies, contact.fraction) : nextBodies;
         time += STEP_DAYS * (contact?.fraction ?? 1);
 
-        bodies.forEach((body, i) => {
-            trails[i].push({ x: body.x, y: body.y });
-            if (trails[i].length > 2000) trails[i].shift();
-        });
+        bodies.forEach(appendTrailPoint);
 
         if (contact) beginImpact(contact);
         else detectOrbitalEvents();
-    }
-
-    function energy() {
-        let total = 0;
-        bodies.forEach(body => (total += 0.5 * body.m * (body.vx * body.vx + body.vy * body.vy)));
-        for (let i = 0; i < 3; i++) {
-            for (let j = i + 1; j < 3; j++) {
-                const dx = bodies[j].x - bodies[i].x;
-                const dy = bodies[j].y - bodies[i].y;
-                total -= (G * bodies[i].m * bodies[j].m) / Math.max(Math.sqrt(dx * dx + dy * dy), 1e-9);
-            }
-        }
-        return total;
     }
 
     function resize() {
@@ -542,7 +530,7 @@ import { clearToast, showToast } from "./three-body-toast.js";
         context.globalAlpha = 1;
 
         if (remnant.m > 0) {
-            const [first, second] = indices.map(index => PARTICLE_COLORS[index]);
+            const [first, second] = indices.map(index => BODY_COLORS_RGB[index]);
             const channels = first.map((channel, i) => Math.round(channel + (second[i] - channel) * remnant.mix));
             const point = toScreen(remnant);
             context.fillStyle = `rgb(${channels.join(",")})`;
