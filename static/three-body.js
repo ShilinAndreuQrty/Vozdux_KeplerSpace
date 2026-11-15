@@ -764,6 +764,8 @@ import { showToast } from "./three-body-toast.js";
             }
             return;
         }
+        if (draggedIndex < 0) return;
+
         const position = toSimulation(pointer);
         bodies[draggedIndex].x = position.x;
         bodies[draggedIndex].y = position.y;
