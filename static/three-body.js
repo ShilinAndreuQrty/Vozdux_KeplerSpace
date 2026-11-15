@@ -1,5 +1,5 @@
 import { bodyRadius, firstContact, stateAtContact } from "./three-body-collision.js";
-import { createParticleImpact } from "./three-body-particles.js";
+import { createParticleImpact, fragmentRadius } from "./three-body-particles.js";
 import { clearToast, showToast } from "./three-body-toast.js";
 
 (() => {
@@ -565,8 +565,24 @@ import { clearToast, showToast } from "./three-body-toast.js";
                 const point = toScreen(particle);
                 const channels = first.map((channel, i) => Math.round(channel + (second[i] - channel) * particle.mix));
                 context.fillStyle = `rgb(${channels.join(",")})`;
+                if (particle.tail?.length > 1) {
+                    context.strokeStyle = context.fillStyle;
+                    context.lineWidth = 1;
+                    context.globalAlpha = 0.34;
+                    context.beginPath();
+                    const start = toScreen(particle.tail[0]);
+                    context.moveTo(start.x, start.y);
+                    for (const sample of particle.tail.slice(1)) {
+                        const { x, y } = toScreen(sample);
+                        context.lineTo(x, y);
+                    }
+                    context.lineTo(point.x, point.y);
+                    context.stroke();
+                    context.globalAlpha = 1;
+                }
                 context.beginPath();
-                context.arc(point.x, point.y, Math.max(0.85, viewport.scale * particle.size), 0, 2 * Math.PI);
+                const radius = fragmentRadius(particle, 2, impact.accretion);
+                context.arc(point.x, point.y, Math.max(0.85, viewport.scale * radius), 0, 2 * Math.PI);
                 context.fill();
             }
         }
