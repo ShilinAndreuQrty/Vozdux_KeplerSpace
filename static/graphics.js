@@ -61,6 +61,7 @@ export function planetSprite({name, palette, texture = "terrain", atmosphere = 0
     const context = canvas.getContext("2d");
     const image = context.createImageData(diameter, diameter);
     const radius = diameter * (shell?.opacity ? .426 : .448);
+    // Имя планеты задаёт воспроизводимый рисунок поверхности.
     const noise = terrainNoise(seedFor(name));
     const star = texture === "star";
     const banded = texture === "bands";

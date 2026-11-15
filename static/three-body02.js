@@ -6,26 +6,27 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
     const stage = document.getElementById("tb-canvas");
     if (!stage) return;
 
-    const $ = id => document.getElementById(id);
+    const byId = id => document.getElementById(id);
+
+    // Модель считает в а.е., сутках и массах Солнца.
     const AU_KM = 149597870.7;
     const DAY_S = 86400;
     const G = 2.959122082855911e-4;
     const KM_S_TO_AU_DAY = DAY_S / AU_KM;
     const SQRT_G = Math.sqrt(G);
-    const DT = 0.01;
+    const STEP_DAYS = 0.01;
     const COLLISION_DISTANCE = 0.01;
     const EJECTION_DISTANCE = 10;
     const STABILITY_CHECK_DAYS = 500;
     const EJECTION_CONFIRM_DAYS = 20;
-    // Храним до 20 000 точек: при DT = 0.01 это примерно 200 суток траектории.
+    // 20 000 точек соответствуют примерно 200 суткам траектории.
     const TRAIL_MAX = 20000;
     const VECTOR_SCALE = 28;
     const MIN_ARROW_LENGTH = 0.1;
     const COLORS = [0x8ddcff, 0xffc58e, 0xc7a5ff];
     const COLOR_CSS = ["#8ddcff", "#ffc58e", "#c7a5ff"];
 
-    // Каждый пресет хранит [x, y, z, vx, vy, vz, m].
-    // Для плоских точных решений z = 0 и vz = 0.
+    // Порядок значений в пресете — x, y, z, vx, vy, vz, масса.
     const PRESETS = {
         figure8: [
             [-0.97000436, 0.24308753, 0, 0.466203685, 0.43236573, 0, 1],
@@ -39,19 +40,19 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
         ]
     };
 
-    let B = [];
-    let INITIAL = [];
-    let DRAFT = {};
-    let DIRTY = {};
-    let T = [[], [], []];
-    let EVENTS = [];
-    const EVENT_KEYS = new Set();
-    let sel = -1;
-    let run = false;
+    let bodies = [];
+    let initialBodies = [];
+    let velocityDrafts = {};
+    let pendingChanges = {};
+    let trails = [[], [], []];
+    let events = [];
+    const eventKeys = new Set();
+    let selectedIndex = -1;
+    let running = false;
     let time = 0;
     let speed = 32;
-    let acc = 0;
-    let last = 0;
+    let timeAccumulator = 0;
+    let lastFrameTime = 0;
     let bodyPointer = null;
     let vectorPointer = false;
     let blankPointer = null;
@@ -62,7 +63,6 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
     let maxSeparation = 0;
     let stabilityReported = false;
 
-    // ---------- Three.js: сцена, камера, рендерер и управление камерой ----------
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x080e1b);
 
@@ -97,7 +97,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
     fillLight.position.set(-5, 4, 2);
     scene.add(fillLight);
 
-    // GridHelper изначально лежит в XZ; поворачиваем его в физическую плоскость XY.
+    // Поворачиваем сетку из XZ в плоскость XY.
     const grid = new THREE.GridHelper(20, 40, 0x7890b8, 0x34435f);
     grid.rotation.x = Math.PI / 2;
     grid.position.z = -0.003;
@@ -204,7 +204,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
     }
 
     function updateTrail(index) {
-        const points = T[index];
+        const points = trails[index];
         const line = trailObjects[index];
         const attr = line.geometry.attributes.position;
         for (let j = 0; j < points.length; j++) {
@@ -219,15 +219,15 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
     }
 
     function updateVisuals() {
-        B.forEach((body, i) => {
+        bodies.forEach((body, i) => {
             const objects = bodyObjects[i];
             const position = tempVector.set(body.x, body.y, body.z);
             const radius = 0.075 + Math.min(0.055, Math.cbrt(Math.max(body.m, 0.001)) * 0.025);
             objects.mesh.position.copy(position);
             objects.mesh.scale.setScalar(radius);
-            objects.mesh.material.emissiveIntensity = sel === i ? 0.65 : 0.28;
+            objects.mesh.material.emissiveIntensity = selectedIndex === i ? 0.65 : 0.28;
             objects.halo.position.copy(position);
-            objects.halo.scale.setScalar(radius * (sel === i ? 2.65 : 2.1));
+            objects.halo.scale.setScalar(radius * (selectedIndex === i ? 2.65 : 2.1));
             const labelPosition = new THREE.Vector3(
                 body.x + radius * 1.25,
                 body.y,
@@ -242,7 +242,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
                 objects.label.style.top = `${(-labelPosition.y * 0.5 + 0.5) * stage.clientHeight}px`;
             }
 
-            const displayedVelocity = (!run && sel === i && DIRTY[i] && DRAFT[i]) ? DRAFT[i] : body;
+            const displayedVelocity = (!running && selectedIndex === i && pendingChanges[i] && velocityDrafts[i]) ? velocityDrafts[i] : body;
             const velocity = new THREE.Vector3(displayedVelocity.vx, displayedVelocity.vy, displayedVelocity.vz);
             const magnitude = velocity.length();
             if (magnitude > 1e-12) velocity.multiplyScalar(1 / magnitude);
@@ -252,10 +252,10 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
             objects.arrow.setDirection(velocity);
             objects.arrow.setLength(arrowLength, Math.min(0.14, arrowLength * 0.3), Math.min(0.075, arrowLength * 0.16));
             objects.handle.position.copy(position).addScaledVector(velocity, arrowLength);
-            objects.handle.visible = sel === i && !run;
+            objects.handle.visible = selectedIndex === i && !running;
             updateTrail(i);
         });
-        $("tb-time").textContent = fmt(time, 2) + " суток";
+        byId("tb-time").textContent = formatNumber(time, 2) + " суток";
     }
 
     function render() {
@@ -263,40 +263,39 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
         renderer.render(scene, camera);
     }
 
-    // ---------- Физическая модель в трёх измерениях ----------
-    const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
-    const fmt = (x, n = 3) => Number(x).toFixed(n).replace(".", ",");
+    const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+    const formatNumber = (value, digits = 3) => Number(value).toFixed(digits).replace(".", ",");
 
     function setStatus(message) {
-        $("tb-status").textContent = message;
+        byId("tb-status").textContent = message;
     }
 
     function hasPendingChanges() {
-        return Object.keys(DIRTY).length > 0;
+        return Object.keys(pendingChanges).length > 0;
     }
 
     function markCustom() {
-        $("tb-preset").value = "custom";
+        byId("tb-preset").value = "custom";
     }
 
     function updateStartControl() {
-        const eventStop = EVENTS.some(e => e.type === "collision" || e.type === "ejection");
-        $("tb-start").disabled = hasPendingChanges() || eventStop;
+        const eventStop = events.some(event => event.type === "collision" || event.type === "ejection");
+        byId("tb-start").disabled = hasPendingChanges() || eventStop;
     }
 
     function markPendingChange() {
-        if (sel < 0) return;
-        DIRTY[sel] = true;
-        if (run) {
-            run = false;
-            acc = 0;
-            $("tb-start").textContent = "Продолжить";
+        if (selectedIndex < 0) return;
+        pendingChanges[selectedIndex] = true;
+        if (running) {
+            running = false;
+            timeAccumulator = 0;
+            byId("tb-start").textContent = "Продолжить";
         }
         updateStartControl();
         setStatus("Есть несохранённые изменения. Примени их или нажми «Отмена». ");
     }
 
-    function setV(body, velocityKmS, angleDegrees) {
+    function setVelocity(body, velocityKmS, angleDegrees) {
         const angle = angleDegrees * Math.PI / 180;
         const velocity = velocityKmS * KM_S_TO_AU_DAY;
         body.vx = velocity * Math.cos(angle);
@@ -341,42 +340,43 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
     function preset(name) {
         activePreset = name;
         const source = name === "chaos" ? randomChaos() : PRESETS[name];
-        B = source.map(a => ({
-            x: a[0], y: a[1], z: a[2],
-            vx: a[3] * SQRT_G,
-            vy: a[4] * SQRT_G,
-            vz: a[5] * SQRT_G,
-            m: a[6]
+        bodies = source.map(entry => ({
+            x: entry[0], y: entry[1], z: entry[2],
+            vx: entry[3] * SQRT_G,
+            vy: entry[4] * SQRT_G,
+            vz: entry[5] * SQRT_G,
+            m: entry[6]
         }));
 
         if (name === "triangle") {
             const side = 1.2;
-            const totalMass = B.reduce((sum, body) => sum + body.m, 0);
-            const cx = B.reduce((sum, body) => sum + body.m * body.x, 0) / totalMass;
-            const cy = B.reduce((sum, body) => sum + body.m * body.y, 0) / totalMass;
-            const w = Math.sqrt(G * totalMass / (side ** 3));
-            B.forEach(body => {
-                const x = body.x - cx;
-                const y = body.y - cy;
+            const totalMass = bodies.reduce((sum, body) => sum + body.m, 0);
+            const centerX = bodies.reduce((sum, body) => sum + body.m * body.x, 0) / totalMass;
+            const centerY = bodies.reduce((sum, body) => sum + body.m * body.y, 0) / totalMass;
+            const angularSpeed = Math.sqrt(G * totalMass / (side ** 3));
+            bodies.forEach(body => {
+                const x = body.x - centerX;
+                const y = body.y - centerY;
                 body.x = x;
                 body.y = y;
                 body.z = 0;
-                body.vx = -w * y;
-                body.vy = w * x;
+                body.vx = -angularSpeed * y;
+                body.vy = angularSpeed * x;
                 body.vz = 0;
             });
         }
 
-        const totalMass = B.reduce((sum, body) => sum + body.m, 0);
+        // Переходим в систему отсчёта центра масс.
+        const totalMass = bodies.reduce((sum, body) => sum + body.m, 0);
         const center = {
-            x: B.reduce((sum, body) => sum + body.m * body.x, 0) / totalMass,
-            y: B.reduce((sum, body) => sum + body.m * body.y, 0) / totalMass,
-            z: B.reduce((sum, body) => sum + body.m * body.z, 0) / totalMass,
-            vx: B.reduce((sum, body) => sum + body.m * body.vx, 0) / totalMass,
-            vy: B.reduce((sum, body) => sum + body.m * body.vy, 0) / totalMass,
-            vz: B.reduce((sum, body) => sum + body.m * body.vz, 0) / totalMass
+            x: bodies.reduce((sum, body) => sum + body.m * body.x, 0) / totalMass,
+            y: bodies.reduce((sum, body) => sum + body.m * body.y, 0) / totalMass,
+            z: bodies.reduce((sum, body) => sum + body.m * body.z, 0) / totalMass,
+            vx: bodies.reduce((sum, body) => sum + body.m * body.vx, 0) / totalMass,
+            vy: bodies.reduce((sum, body) => sum + body.m * body.vy, 0) / totalMass,
+            vz: bodies.reduce((sum, body) => sum + body.m * body.vz, 0) / totalMass
         };
-        B.forEach(body => {
+        bodies.forEach(body => {
             body.x -= center.x;
             body.y -= center.y;
             body.z -= center.z;
@@ -385,14 +385,14 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
             body.vz -= center.vz;
         });
 
-        INITIAL = B.map(body => ({ ...body }));
-        DRAFT = {};
-        DIRTY = {};
-        sel = -1;
+        initialBodies = bodies.map(body => ({ ...body }));
+        velocityDrafts = {};
+        pendingChanges = {};
+        selectedIndex = -1;
         controls.target.set(0, 0, 0);
         camera.position.set(3.8, -5.8, 4.7);
         controls.update();
-        editor();
+        updateEditor();
         resetAll();
     }
 
@@ -416,30 +416,30 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
     }
 
     function derivatives(state) {
-        const a = accelerations(state);
+        const accelerationsByBody = accelerations(state);
         return state.map((body, i) => ({
             x: body.vx, y: body.vy, z: body.vz,
-            vx: a[i].ax, vy: a[i].ay, vz: a[i].az
+            vx: accelerationsByBody[i].ax, vy: accelerationsByBody[i].ay, vz: accelerationsByBody[i].az
         }));
     }
 
-    function shift(state, k, factor) {
+    function shift(state, derivative, offset) {
         return state.map((body, i) => ({
             ...body,
-            x: body.x + k[i].x * factor,
-            y: body.y + k[i].y * factor,
-            z: body.z + k[i].z * factor,
-            vx: body.vx + k[i].vx * factor,
-            vy: body.vy + k[i].vy * factor,
-            vz: body.vz + k[i].vz * factor
+            x: body.x + derivative[i].x * offset,
+            y: body.y + derivative[i].y * offset,
+            z: body.z + derivative[i].z * offset,
+            vx: body.vx + derivative[i].vx * offset,
+            vy: body.vy + derivative[i].vy * offset,
+            vz: body.vz + derivative[i].vz * offset
         }));
     }
 
     function addEvent(type, bodies, message) {
         const key = type + ":" + bodies.slice().sort((a, b) => a - b).join("-");
-        if (EVENT_KEYS.has(key)) return;
-        EVENT_KEYS.add(key);
-        EVENTS.push({ type, bodies, message, time });
+        if (eventKeys.has(key)) return;
+        eventKeys.add(key);
+        events.push({ type, bodies, message, time });
         renderEvents();
     }
 
@@ -447,12 +447,12 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
         let collision = false;
         let ejection = false;
 
-        for (let i = 0; i < B.length; i++) {
-            for (let j = i + 1; j < B.length; j++) {
+        for (let i = 0; i < bodies.length; i++) {
+            for (let j = i + 1; j < bodies.length; j++) {
                 const distance = Math.hypot(
-                    B[i].x - B[j].x,
-                    B[i].y - B[j].y,
-                    B[i].z - B[j].z
+                    bodies[i].x - bodies[j].x,
+                    bodies[i].y - bodies[j].y,
+                    bodies[i].z - bodies[j].z
                 );
                 if (distance <= COLLISION_DISTANCE) {
                     addEvent("collision", [i, j], `Столкновение тел ${i + 1} и ${j + 1}`);
@@ -461,18 +461,18 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
             }
         }
 
-        for (let i = 0; i < B.length; i++) {
-            if (EVENT_KEYS.has("ejection:" + i)) continue;
-            const pair = B.filter((_, j) => j !== i);
-            const a = pair[0], b = pair[1], body = B[i];
-            const pairMass = a.m + b.m;
+        for (let i = 0; i < bodies.length; i++) {
+            if (eventKeys.has("ejection:" + i)) continue;
+            const pair = bodies.filter((_, j) => j !== i);
+            const first = pair[0], second = pair[1], body = bodies[i];
+            const pairMass = first.m + second.m;
             const center = {
-                x: (a.m * a.x + b.m * b.x) / pairMass,
-                y: (a.m * a.y + b.m * b.y) / pairMass,
-                z: (a.m * a.z + b.m * b.z) / pairMass,
-                vx: (a.m * a.vx + b.m * b.vx) / pairMass,
-                vy: (a.m * a.vy + b.m * b.vy) / pairMass,
-                vz: (a.m * a.vz + b.m * b.vz) / pairMass
+                x: (first.m * first.x + second.m * second.x) / pairMass,
+                y: (first.m * first.y + second.m * second.y) / pairMass,
+                z: (first.m * first.z + second.m * second.z) / pairMass,
+                vx: (first.m * first.vx + second.m * second.vx) / pairMass,
+                vy: (first.m * first.vy + second.m * second.vy) / pairMass,
+                vz: (first.m * first.vz + second.m * second.vz) / pairMass
             };
             const rx = body.x - center.x;
             const ry = body.y - center.y;
@@ -482,6 +482,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
             const rvz = body.vz - center.vz;
             const distance = Math.hypot(rx, ry, rz);
             const radial = rx * rvx + ry * rvy + rz * rvz;
+            // Для выброса нужна положительная энергия относительно оставшейся пары.
             const energy = 0.5 * (rvx * rvx + rvy * rvy + rvz * rvz)
                 - G * pairMass / Math.max(distance, 1e-12);
             const candidate = distance >= EJECTION_DISTANCE && radial > 0 && energy > 0;
@@ -498,27 +499,27 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
         }
 
         const distances = [];
-        for (let i = 0; i < B.length; i++) {
-            for (let j = i + 1; j < B.length; j++) {
+        for (let i = 0; i < bodies.length; i++) {
+            for (let j = i + 1; j < bodies.length; j++) {
                 distances.push(Math.hypot(
-                    B[i].x - B[j].x,
-                    B[i].y - B[j].y,
-                    B[i].z - B[j].z
+                    bodies[i].x - bodies[j].x,
+                    bodies[i].y - bodies[j].y,
+                    bodies[i].z - bodies[j].z
                 ));
             }
         }
         maxSeparation = Math.max(maxSeparation, ...distances);
 
-        if (time >= STABILITY_CHECK_DAYS && !stabilityReported && EVENTS.length === 0 && maxSeparation < EJECTION_DISTANCE) {
+        if (time >= STABILITY_CHECK_DAYS && !stabilityReported && events.length === 0 && maxSeparation < EJECTION_DISTANCE) {
             stabilityReported = true;
             addEvent("stable", [], "Предварительно устойчивое движение за 500 суток");
         }
 
         if (collision || ejection) {
-            run = false;
-            acc = 0;
-            $("tb-start").disabled = true;
-            $("tb-start").textContent = collision ? "Столкновение" : "Выброс тела";
+            running = false;
+            timeAccumulator = 0;
+            byId("tb-start").disabled = true;
+            byId("tb-start").textContent = collision ? "Столкновение" : "Выброс тела";
             setStatus("Модель остановлена");
             showToast(
                 collision ? "Модель остановлена: обнаружено столкновение" : "Модель остановлена: обнаружен выброс тела"
@@ -527,20 +528,20 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
     }
 
     function renderEvents() {
-        const panel = $("tb-events");
+        const panel = byId("tb-events");
         if (!panel) return;
-        if (!EVENTS.length) {
+        if (!events.length) {
             panel.innerHTML = "<strong>События:</strong> пока не обнаружены";
             return;
         }
         panel.innerHTML = "<strong>Обнаруженные события:</strong><ul>" +
-            EVENTS.map(event => `<li>${event.message} — ${fmt(event.time, 2)} суток</li>`).join("") +
+            events.map(event => `<li>${event.message} — ${formatNumber(event.time, 2)} суток</li>`).join("") +
             "</ul>";
     }
 
     function clearEvents() {
-        EVENTS = [];
-        EVENT_KEYS.clear();
+        events = [];
+        eventKeys.clear();
         ejectionSince = {};
         maxSeparation = 0;
         stabilityReported = false;
@@ -548,225 +549,226 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
     }
 
     function step() {
-        const a = derivatives(B);
-        const b = derivatives(shift(B, a, DT / 2));
-        const d = derivatives(shift(B, b, DT / 2));
-        const e = derivatives(shift(B, d, DT));
+        // Шаг метода Рунге — Кутты четвёртого порядка.
+        const k1 = derivatives(bodies);
+        const k2 = derivatives(shift(bodies, k1, STEP_DAYS / 2));
+        const k3 = derivatives(shift(bodies, k2, STEP_DAYS / 2));
+        const k4 = derivatives(shift(bodies, k3, STEP_DAYS));
 
-        B = B.map((body, i) => ({
+        bodies = bodies.map((body, i) => ({
             ...body,
-            x: body.x + DT / 6 * (a[i].x + 2 * b[i].x + 2 * d[i].x + e[i].x),
-            y: body.y + DT / 6 * (a[i].y + 2 * b[i].y + 2 * d[i].y + e[i].y),
-            z: body.z + DT / 6 * (a[i].z + 2 * b[i].z + 2 * d[i].z + e[i].z),
-            vx: body.vx + DT / 6 * (a[i].vx + 2 * b[i].vx + 2 * d[i].vx + e[i].vx),
-            vy: body.vy + DT / 6 * (a[i].vy + 2 * b[i].vy + 2 * d[i].vy + e[i].vy),
-            vz: body.vz + DT / 6 * (a[i].vz + 2 * b[i].vz + 2 * d[i].vz + e[i].vz)
+            x: body.x + STEP_DAYS / 6 * (k1[i].x + 2 * k2[i].x + 2 * k3[i].x + k4[i].x),
+            y: body.y + STEP_DAYS / 6 * (k1[i].y + 2 * k2[i].y + 2 * k3[i].y + k4[i].y),
+            z: body.z + STEP_DAYS / 6 * (k1[i].z + 2 * k2[i].z + 2 * k3[i].z + k4[i].z),
+            vx: body.vx + STEP_DAYS / 6 * (k1[i].vx + 2 * k2[i].vx + 2 * k3[i].vx + k4[i].vx),
+            vy: body.vy + STEP_DAYS / 6 * (k1[i].vy + 2 * k2[i].vy + 2 * k3[i].vy + k4[i].vy),
+            vz: body.vz + STEP_DAYS / 6 * (k1[i].vz + 2 * k2[i].vz + 2 * k3[i].vz + k4[i].vz)
         }));
 
-        time += DT;
-        B.forEach((body, i) => {
-            T[i].push({ x: body.x, y: body.y, z: body.z });
-            if (T[i].length > TRAIL_MAX) T[i].shift();
+        time += STEP_DAYS;
+        bodies.forEach((body, i) => {
+            trails[i].push({ x: body.x, y: body.y, z: body.z });
+            if (trails[i].length > TRAIL_MAX) trails[i].shift();
         });
         detectEvents();
     }
 
     function energy() {
         let total = 0;
-        B.forEach(body => {
+        bodies.forEach(body => {
             total += 0.5 * body.m * (body.vx ** 2 + body.vy ** 2 + body.vz ** 2);
         });
-        for (let i = 0; i < B.length; i++) {
-            for (let j = i + 1; j < B.length; j++) {
+        for (let i = 0; i < bodies.length; i++) {
+            for (let j = i + 1; j < bodies.length; j++) {
                 const distance = Math.hypot(
-                    B[j].x - B[i].x,
-                    B[j].y - B[i].y,
-                    B[j].z - B[i].z
+                    bodies[j].x - bodies[i].x,
+                    bodies[j].y - bodies[i].y,
+                    bodies[j].z - bodies[i].z
                 );
-                total -= G * B[i].m * B[j].m / Math.max(distance, 1e-9);
+                total -= G * bodies[i].m * bodies[j].m / Math.max(distance, 1e-9);
             }
         }
         return total;
     }
 
-    // ---------- Сохранение существующей логики панели параметров ----------
+    // Стрелка показывает черновик скорости до применения параметров.
     function draftFor(index) {
-        if (!DRAFT[index]) {
-            DRAFT[index] = {
-                vx: B[index].vx,
-                vy: B[index].vy,
-                vz: B[index].vz
+        if (!velocityDrafts[index]) {
+            velocityDrafts[index] = {
+                vx: bodies[index].vx,
+                vy: bodies[index].vy,
+                vz: bodies[index].vz
             };
         }
-        return DRAFT[index];
+        return velocityDrafts[index];
     }
 
-    function editor() {
-        const fields = $("tb-fields");
-        const help = $("tb-help");
-        if (sel < 0) {
+    function updateEditor() {
+        const fields = byId("tb-fields");
+        const help = byId("tb-help");
+        if (selectedIndex < 0) {
             fields.hidden = true;
             help.hidden = false;
-            $("tb-editor-title").textContent = "Выбери тело";
+            byId("tb-editor-title").textContent = "Выбери тело";
             render();
             return;
         }
 
-        const body = B[sel];
-        const draft = draftFor(sel);
+        const body = bodies[selectedIndex];
+        const draft = draftFor(selectedIndex);
         fields.hidden = false;
         help.hidden = true;
-        $("tb-editor-title").textContent = "Тело " + (sel + 1);
-        $("tb-mass").value = body.m;
-        $("tb-mass-range").value = clamp(body.m, 0.0001, 10);
-        $("tb-mass-out").textContent = fmt(body.m, 5);
-        $("tb-x").value = body.x.toFixed(5);
-        $("tb-y").value = body.y.toFixed(5);
-        $("tb-z").value = body.z.toFixed(5);
-        $("tb-vel").value = velocityXY(draft).toFixed(3);
-        $("tb-vel-range").value = clamp(velocityXY(draft), 0, 100);
-        $("tb-vel-out").textContent = fmt(velocityXY(draft));
-        $("tb-angle").value = (Math.atan2(draft.vy, draft.vx) * 180 / Math.PI).toFixed(2);
-        $("tb-vz").value = velocityZ(draft).toFixed(3);
+        byId("tb-editor-title").textContent = "Тело " + (selectedIndex + 1);
+        byId("tb-mass").value = body.m;
+        byId("tb-mass-range").value = clamp(body.m, 0.0001, 10);
+        byId("tb-mass-out").textContent = formatNumber(body.m, 5);
+        byId("tb-x").value = body.x.toFixed(5);
+        byId("tb-y").value = body.y.toFixed(5);
+        byId("tb-z").value = body.z.toFixed(5);
+        byId("tb-vel").value = velocityXY(draft).toFixed(3);
+        byId("tb-vel-range").value = clamp(velocityXY(draft), 0, 100);
+        byId("tb-vel-out").textContent = formatNumber(velocityXY(draft));
+        byId("tb-angle").value = (Math.atan2(draft.vy, draft.vx) * 180 / Math.PI).toFixed(2);
+        byId("tb-vz").value = velocityZ(draft).toFixed(3);
         render();
     }
 
-    function reset() {
-        run = false;
+    function resetSimulation() {
+        running = false;
         time = 0;
-        acc = 0;
-        T = B.map(body => [{ x: body.x, y: body.y, z: body.z }]);
+        timeAccumulator = 0;
+        trails = bodies.map(body => [{ x: body.x, y: body.y, z: body.z }]);
         clearEvents();
-        $("tb-start").disabled = false;
-        $("tb-start").textContent = "Запустить";
+        byId("tb-start").disabled = false;
+        byId("tb-start").textContent = "Запустить";
         updateStartControl();
         setStatus("Модель остановлена");
         render();
     }
 
     function resetAll() {
-        B = INITIAL.map(body => ({ ...body }));
-        DRAFT = {};
-        DIRTY = {};
-        $("tb-preset").value = activePreset;
-        reset();
-        editor();
+        bodies = initialBodies.map(body => ({ ...body }));
+        velocityDrafts = {};
+        pendingChanges = {};
+        byId("tb-preset").value = activePreset;
+        resetSimulation();
+        updateEditor();
     }
 
     function resetSelected() {
-        if (sel < 0) return;
-        B[sel] = { ...INITIAL[sel] };
-        delete DRAFT[sel];
-        delete DIRTY[sel];
-        reset();
-        editor();
+        if (selectedIndex < 0) return;
+        bodies[selectedIndex] = { ...initialBodies[selectedIndex] };
+        delete velocityDrafts[selectedIndex];
+        delete pendingChanges[selectedIndex];
+        resetSimulation();
+        updateEditor();
     }
 
     function clearSelection() {
-        if (sel < 0) return;
-        const old = sel;
-        const hadChanges = !!DIRTY[old];
-        delete DRAFT[old];
-        delete DIRTY[old];
+        if (selectedIndex < 0) return;
+        const previousIndex = selectedIndex;
+        const hadChanges = !!pendingChanges[previousIndex];
+        delete velocityDrafts[previousIndex];
+        delete pendingChanges[previousIndex];
         updateStartControl();
-        sel = -1;
+        selectedIndex = -1;
         bodyPointer = null;
         vectorPointer = false;
         dragBodyIndex = -1;
         controls.enabled = true;
-        editor();
-        if (hadChanges) $("tb-status").textContent = "Неподтверждённые изменения отменены";
+        updateEditor();
+        if (hadChanges) byId("tb-status").textContent = "Неподтверждённые изменения отменены";
     }
 
-    function read() {
+    function readParameters() {
         return {
-            m: +$("tb-mass").value,
-            x: +$("tb-x").value,
-            y: +$("tb-y").value,
-            z: +$("tb-z").value,
-            v: +$("tb-vel").value,
-            vz: +$("tb-vz").value,
-            a: +$("tb-angle").value
+            m: +byId("tb-mass").value,
+            x: +byId("tb-x").value,
+            y: +byId("tb-y").value,
+            z: +byId("tb-z").value,
+            v: +byId("tb-vel").value,
+            vz: +byId("tb-vz").value,
+            a: +byId("tb-angle").value
         };
     }
 
     function commitSelectedChanges(parameters) {
-        if (sel < 0) return;
-        const draft = draftFor(sel);
-        B[sel].m = parameters.m;
-        B[sel].x = parameters.x;
-        B[sel].y = parameters.y;
-        B[sel].z = parameters.z;
-        B[sel].vx = draft.vx;
-        B[sel].vy = draft.vy;
-        B[sel].vz = draft.vz;
-        delete DRAFT[sel];
-        delete DIRTY[sel];
+        if (selectedIndex < 0) return;
+        const draft = draftFor(selectedIndex);
+        bodies[selectedIndex].m = parameters.m;
+        bodies[selectedIndex].x = parameters.x;
+        bodies[selectedIndex].y = parameters.y;
+        bodies[selectedIndex].z = parameters.z;
+        bodies[selectedIndex].vx = draft.vx;
+        bodies[selectedIndex].vy = draft.vy;
+        bodies[selectedIndex].vz = draft.vz;
+        delete velocityDrafts[selectedIndex];
+        delete pendingChanges[selectedIndex];
     }
 
     function applyMass(all) {
-        const p = read();
-        if (!Number.isFinite(p.m) || p.m <= 0 || p.m > 1000) {
+        const parameters = readParameters();
+        if (!Number.isFinite(parameters.m) || parameters.m <= 0 || parameters.m > 1000) {
             showToast("Масса должна быть больше нуля и не превышать 1000 масс Солнца.");
             return;
         }
-        if (sel >= 0) commitSelectedChanges(p);
+        if (selectedIndex >= 0) commitSelectedChanges(parameters);
         markCustom();
-        if (all) B.forEach(body => body.m = p.m);
+        if (all) bodies.forEach(body => body.m = parameters.m);
         setStatus(all ? "Масса применена ко всем телам" : "Масса применена к телу");
-        reset();
-        editor();
+        resetSimulation();
+        updateEditor();
     }
 
     function applyVelocity(all) {
-        const p = read();
-        if (!Number.isFinite(p.v) || p.v < 0 || p.v > 10000 || !Number.isFinite(p.vz) || Math.abs(p.vz) > 10000) {
+        const parameters = readParameters();
+        if (!Number.isFinite(parameters.v) || parameters.v < 0 || parameters.v > 10000 || !Number.isFinite(parameters.vz) || Math.abs(parameters.vz) > 10000) {
             showToast("Проверь компоненты скорости. Допустимое значение по каждой оси: от -10000 до 10000 км/с.");
             return;
         }
-        if (sel >= 0) commitSelectedChanges(p);
+        if (selectedIndex >= 0) commitSelectedChanges(parameters);
         markCustom();
         if (all) {
-            B.forEach(body => {
+            bodies.forEach(body => {
                 const angle = Math.atan2(body.vy, body.vx);
-                setV(body, p.v, angle * 180 / Math.PI);
+                setVelocity(body, parameters.v, angle * 180 / Math.PI);
             });
-        } else if (sel >= 0) {
-            setV(B[sel], p.v, p.a);
-            B[sel].vz = p.vz * KM_S_TO_AU_DAY;
+        } else if (selectedIndex >= 0) {
+            setVelocity(bodies[selectedIndex], parameters.v, parameters.a);
+            bodies[selectedIndex].vz = parameters.vz * KM_S_TO_AU_DAY;
         }
         setStatus(all ? "Скорость применена ко всем телам" : "Скорость применена к телу");
-        reset();
-        editor();
+        resetSimulation();
+        updateEditor();
     }
 
     function updateDraftFromInputs() {
-        if (sel < 0) return;
-        const xySpeed = +$("tb-vel").value;
-        const angle = +$("tb-angle").value;
-        const zSpeed = +$("tb-vz").value;
+        if (selectedIndex < 0) return;
+        const xySpeed = +byId("tb-vel").value;
+        const angle = +byId("tb-angle").value;
+        const zSpeed = +byId("tb-vz").value;
         if (![xySpeed, angle, zSpeed].every(Number.isFinite)) return;
-        const draft = draftFor(sel);
-        setV(draft, xySpeed, angle);
+        const draft = draftFor(selectedIndex);
+        setVelocity(draft, xySpeed, angle);
         draft.vz = zSpeed * KM_S_TO_AU_DAY;
         markPendingChange();
         markCustom();
-        $("tb-vel-out").textContent = fmt(xySpeed);
-        $("tb-vel-range").value = clamp(xySpeed, 0, 100);
+        byId("tb-vel-out").textContent = formatNumber(xySpeed);
+        byId("tb-vel-range").value = clamp(xySpeed, 0, 100);
         render();
     }
 
-    // ---------- Выбор тел и перетаскивание в 3D ----------
+    // Перетаскивание идёт в плоскости экрана через центр тела.
     renderer.domElement.addEventListener("pointerdown", event => {
         if (event.button !== 0) return;
         setPointerRay(event);
 
-        if (sel >= 0 && !run) {
-            const handleHit = raycaster.intersectObject(bodyObjects[sel].handle, false)[0];
+        if (selectedIndex >= 0 && !running) {
+            const handleHit = raycaster.intersectObject(bodyObjects[selectedIndex].handle, false)[0];
             if (handleHit) {
                 vectorPointer = true;
-                dragBodyIndex = sel;
-                const origin = bodyObjects[sel].mesh.position;
+                dragBodyIndex = selectedIndex;
+                const origin = bodyObjects[selectedIndex].mesh.position;
                 dragPlane.setFromNormalAndCoplanarPoint(camera.getWorldDirection(new THREE.Vector3()), origin);
                 controls.enabled = false;
                 renderer.domElement.setPointerCapture(event.pointerId);
@@ -778,21 +780,21 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
         const hits = raycaster.intersectObjects(bodyObjects.map(item => item.mesh), false);
         if (hits.length) {
             const index = hits[0].object.userData.bodyIndex;
-            if (sel >= 0 && sel !== index) {
-                const hadChanges = !!DIRTY[sel];
-                delete DRAFT[sel];
-                delete DIRTY[sel];
+            if (selectedIndex >= 0 && selectedIndex !== index) {
+                const hadChanges = !!pendingChanges[selectedIndex];
+                delete velocityDrafts[selectedIndex];
+                delete pendingChanges[selectedIndex];
                 updateStartControl();
-                if (hadChanges) $("tb-status").textContent = "Неподтверждённые изменения отменены";
+                if (hadChanges) byId("tb-status").textContent = "Неподтверждённые изменения отменены";
             }
-            sel = index;
+            selectedIndex = index;
             dragBodyIndex = index;
             bodyPointer = { id: event.pointerId, x: event.clientX, y: event.clientY, moved: false };
             const origin = bodyObjects[index].mesh.position;
             dragPlane.setFromNormalAndCoplanarPoint(camera.getWorldDirection(new THREE.Vector3()), origin);
             controls.enabled = false;
             renderer.domElement.setPointerCapture(event.pointerId);
-            editor();
+            updateEditor();
             event.stopImmediatePropagation();
             return;
         }
@@ -805,7 +807,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
             blankPointer.moved = true;
         }
 
-        if (vectorPointer && dragBodyIndex >= 0 && !run) {
+        if (vectorPointer && dragBodyIndex >= 0 && !running) {
             const point = pointOnDragPlane(event);
             if (!point) return;
             const origin = bodyObjects[dragBodyIndex].mesh.position;
@@ -816,7 +818,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
             draft.vz = velocity.z;
             markPendingChange();
             markCustom();
-            editor();
+            updateEditor();
             return;
         }
 
@@ -827,15 +829,15 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
         const point = pointOnDragPlane(event);
         if (!point) return;
-        const body = B[dragBodyIndex];
+        const body = bodies[dragBodyIndex];
         body.x = point.x;
         body.y = point.y;
         body.z = point.z;
-        T[dragBodyIndex] = [{ x: body.x, y: body.y, z: body.z }];
+        trails[dragBodyIndex] = [{ x: body.x, y: body.y, z: body.z }];
         markCustom();
-        $("tb-x").value = body.x.toFixed(5);
-        $("tb-y").value = body.y.toFixed(5);
-        $("tb-z").value = body.z.toFixed(5);
+        byId("tb-x").value = body.x.toFixed(5);
+        byId("tb-y").value = body.y.toFixed(5);
+        byId("tb-z").value = body.z.toFixed(5);
         render();
     });
 
@@ -856,7 +858,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
             if (renderer.domElement.hasPointerCapture(event.pointerId)) {
                 renderer.domElement.releasePointerCapture(event.pointerId);
             }
-            editor();
+            updateEditor();
         }
         if (blankPointer) {
             const wasClick = !blankPointer.moved;
@@ -868,29 +870,28 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
     renderer.domElement.addEventListener("pointerup", finishPointer);
     renderer.domElement.addEventListener("pointercancel", finishPointer);
 
-    // ---------- Обработчики панели: прежние действия плюс координата Z и Vz ----------
-    $("tb-mass").oninput = () => {
-        $("tb-mass-range").value = clamp(+$("tb-mass").value || 0.0001, 0.0001, 10);
-        $("tb-mass-out").textContent = fmt(+$("tb-mass").value || 0, 5);
+    byId("tb-mass").oninput = () => {
+        byId("tb-mass-range").value = clamp(+byId("tb-mass").value || 0.0001, 0.0001, 10);
+        byId("tb-mass-out").textContent = formatNumber(+byId("tb-mass").value || 0, 5);
         markPendingChange();
     };
-    $("tb-mass-range").oninput = event => {
-        $("tb-mass").value = event.target.value;
-        $("tb-mass-out").textContent = fmt(+event.target.value, 5);
+    byId("tb-mass-range").oninput = event => {
+        byId("tb-mass").value = event.target.value;
+        byId("tb-mass-out").textContent = formatNumber(+event.target.value, 5);
         markPendingChange();
     };
-    ["tb-x", "tb-y", "tb-z"].forEach(id => $(id).oninput = markPendingChange);
-    $("tb-vel").oninput = updateDraftFromInputs;
-    $("tb-vel-range").oninput = event => {
-        $("tb-vel").value = event.target.value;
+    ["tb-x", "tb-y", "tb-z"].forEach(id => byId(id).oninput = markPendingChange);
+    byId("tb-vel").oninput = updateDraftFromInputs;
+    byId("tb-vel-range").oninput = event => {
+        byId("tb-vel").value = event.target.value;
         updateDraftFromInputs();
     };
-    $("tb-angle").oninput = updateDraftFromInputs;
-    $("tb-vz").oninput = updateDraftFromInputs;
+    byId("tb-angle").oninput = updateDraftFromInputs;
+    byId("tb-vz").oninput = updateDraftFromInputs;
 
-    $("tb-apply").onclick = () => {
-        if (sel < 0) return;
-        const p = read();
+    byId("tb-apply").onclick = () => {
+        if (selectedIndex < 0) return;
+        const p = readParameters();
         if (![p.m, p.x, p.y, p.z, p.v, p.vz, p.a].every(Number.isFinite) ||
             p.m <= 0 || p.m > 1000 ||
             Math.abs(p.x) > 10000 || Math.abs(p.y) > 10000 || Math.abs(p.z) > 10000 ||
@@ -899,62 +900,62 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
             return;
         }
         commitSelectedChanges(p);
-        setV(B[sel], p.v, p.a);
-        B[sel].vz = p.vz * KM_S_TO_AU_DAY;
+        setVelocity(bodies[selectedIndex], p.v, p.a);
+        bodies[selectedIndex].vz = p.vz * KM_S_TO_AU_DAY;
         markCustom();
         setStatus("Параметры тела применены");
-        reset();
-        editor();
+        resetSimulation();
+        updateEditor();
     };
 
-    $("tb-cancel").onclick = () => {
-        if (sel < 0) return;
-        delete DRAFT[sel];
-        delete DIRTY[sel];
-        editor();
+    byId("tb-cancel").onclick = () => {
+        if (selectedIndex < 0) return;
+        delete velocityDrafts[selectedIndex];
+        delete pendingChanges[selectedIndex];
+        updateEditor();
         updateStartControl();
         setStatus("Несохранённые изменения отменены");
     };
-    $("tb-reset-selected").onclick = resetSelected;
-    $("tb-mass-all").onclick = () => applyMass(true);
-    $("tb-velocity-all").onclick = () => applyVelocity(true);
-    $("tb-preset").onchange = event => preset(event.target.value);
-    $("tb-start").onclick = () => {
+    byId("tb-reset-selected").onclick = resetSelected;
+    byId("tb-mass-all").onclick = () => applyMass(true);
+    byId("tb-velocity-all").onclick = () => applyVelocity(true);
+    byId("tb-preset").onchange = event => preset(event.target.value);
+    byId("tb-start").onclick = () => {
         if (hasPendingChanges()) {
             showToast("Сначала примени параметры или нажми «Отмена».");
             return;
         }
-        run = !run;
-        $("tb-start").textContent = run ? "Остановить" : "Продолжить";
-        bodyObjects.forEach(object => object.handle.visible = !run);
-        setStatus(run ? "Симуляция выполняется" : "Симуляция остановлена");
+        running = !running;
+        byId("tb-start").textContent = running ? "Остановить" : "Продолжить";
+        bodyObjects.forEach(object => object.handle.visible = !running);
+        setStatus(running ? "Симуляция выполняется" : "Симуляция остановлена");
     };
-    $("tb-reset").onclick = resetAll;
-    $("tb-speed").oninput = event => {
+    byId("tb-reset").onclick = resetAll;
+    byId("tb-speed").oninput = event => {
         speed = +event.target.value;
-        $("tb-speed-out").textContent = speed + "×";
+        byId("tb-speed-out").textContent = speed + "×";
     };
 
     window.addEventListener("keydown", event => {
         if (event.key !== "Escape") return;
-        run = false;
-        acc = 0;
-        $("tb-start").disabled = false;
+        running = false;
+        timeAccumulator = 0;
+        byId("tb-start").disabled = false;
         clearSelection();
-        $("tb-start").textContent = "Продолжить";
-        $("tb-status").textContent = "Симуляция остановлена";
+        byId("tb-start").textContent = "Продолжить";
+        byId("tb-status").textContent = "Симуляция остановлена";
     });
 
     function frame(now) {
-        if (!last) last = now;
-        const elapsed = Math.min((now - last) / 1000, 0.05);
-        last = now;
-        if (run) {
-            acc += elapsed * speed * 2;
+        if (!lastFrameTime) lastFrameTime = now;
+        const elapsed = Math.min((now - lastFrameTime) / 1000, 0.05);
+        lastFrameTime = now;
+        if (running) {
+            timeAccumulator += elapsed * speed * 2;
             let iterations = 0;
-            while (run && acc >= DT && iterations++ < 500) {
+            while (running && timeAccumulator >= STEP_DAYS && iterations++ < 500) {
                 step();
-                acc -= DT;
+                timeAccumulator -= STEP_DAYS;
             }
         }
         controls.update();
@@ -962,19 +963,18 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
         requestAnimationFrame(frame);
     }
 
-    // Начальная конфигурация и запуск цикла отображения.
-    B = PRESETS.figure8.map(a => ({
-        x: a[0], y: a[1], z: a[2],
-        vx: a[3] * SQRT_G,
-        vy: a[4] * SQRT_G,
-        vz: a[5] * SQRT_G,
-        m: a[6]
+    bodies = PRESETS.figure8.map(entry => ({
+        x: entry[0], y: entry[1], z: entry[2],
+        vx: entry[3] * SQRT_G,
+        vy: entry[4] * SQRT_G,
+        vz: entry[5] * SQRT_G,
+        m: entry[6]
     }));
-    INITIAL = B.map(body => ({ ...body }));
-    $("tb-preset").value = activePreset;
+    initialBodies = bodies.map(body => ({ ...body }));
+    byId("tb-preset").value = activePreset;
     resize();
-    editor();
-    reset();
+    updateEditor();
+    resetSimulation();
     window.addEventListener("resize", resize);
     if ("ResizeObserver" in window) {
         new ResizeObserver(resize).observe(stage);

@@ -95,6 +95,7 @@ SOLAR_EVENTS = (
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # При запуске берём готовый снимок каталога.
     app.state.catalog = load_catalog()
     app.state.refresh_lock = asyncio.Lock()
     app.state.last_attempt = float("-inf")
@@ -179,6 +180,7 @@ async def refresh_catalog(request: Request) -> JSONResponse:
         except (OSError, ValueError, KeyError, csv.Error) as error:
             logger.warning("NASA Exoplanet Archive refresh failed: %s", error)
             return JSONResponse({"message": "Обновление NASA сейчас недоступно."}, status_code=503)
+        # Подменяем снимок после успешной загрузки и записи.
         state.catalog = catalog
     return JSONResponse({"fetched_at": catalog["fetched_at"]})
 

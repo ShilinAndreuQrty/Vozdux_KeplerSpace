@@ -70,7 +70,7 @@ def habitable_zone(temperature, luminosity, circumbinary=False, spectral_type=""
     if not 2000 <= temperature <= 7200:
         return {"available": False, "reason": "Температура звезды за пределами модели (2 000–7 200 К)."}
 
-    # Haqq-Misra, Wolf & Kopparapu (2026), ExoColumn, Table 1.
+    # Коэффициенты из таблицы 1 ExoColumn (Haqq-Misra, Wolf и Kopparapu, 2026).
     offset = temperature - 5780
     coefficients = {
         "runaway": (1.0684, 9.1544e-5, 1.6309e-8, 1.7962e-12, 1.2497e-16),
@@ -115,7 +115,7 @@ def orbit_summary(axis, eccentricity, zone):
                 return 0.0
             if distance >= far:
                 return 1.0
-            # Mean anomaly grows linearly in time. The outward half-orbit is symmetric.
+            # Средняя аномалия растёт линейно со временем. Половины орбиты симметричны.
             cosine = (1 - distance / axis) / eccentricity
             anomaly = math.acos(max(-1, min(1, cosine)))
             return (anomaly - eccentricity * math.sin(anomaly)) / math.pi
@@ -149,7 +149,7 @@ def physical_properties(mass_field, radius_field):
     values = {name: {"value": value} for name, value in bulk_values(mass, radius).items()}
     mass_bounds, radius_bounds = measurement_bounds(mass_field), measurement_bounds(radius_field)
     if mass_bounds and radius_bounds:
-        # Both quantities increase with mass and decrease with radius.
+        # Плотность и скорость убегания растут с массой и падают с радиусом.
         lower = bulk_values(mass_bounds[0], radius_bounds[1])
         upper = bulk_values(mass_bounds[1], radius_bounds[0])
         for key, field in values.items():
@@ -162,7 +162,7 @@ def observation_priority(radius, zone, orbit, giant):
     if giant or not positive(radius) or not .35 < radius < 2.5 or not positive(axis) or not zone.get("available"):
         return None
 
-    # Score the axis once. Only an orbit with known shape can earn time-in-zone points.
+    # Баллы за время в зоне начисляем при известном эксцентриситете.
     distance_ratio = max(zone["inner"] / axis, axis / zone["outer"], 1)
     proximity_points = 30 * distance_ratio ** -4
     fraction = orbit.get("fraction")

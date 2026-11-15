@@ -31,8 +31,7 @@ function planetPalette(flux) {
 }
 
 function atmosphereStyle(planet, palette) {
-    // For a fixed gas composition the relative scale height varies as T / (gR).
-    // The renderer uses this only as a visual cue, with an Earth-like fallback.
+    // Толщина видимой оболочки зависит от T/(gR). При пропусках берём земные значения.
     const radius = planet.radius > 0 ? planet.radius : 1;
     const gravity = planet.mass > 0 ? planet.mass / radius ** 2 : 1;
     const temperature = planet.temperature > 0 ? planet.temperature

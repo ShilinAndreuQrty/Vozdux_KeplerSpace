@@ -193,12 +193,12 @@ def estimate(value, label, url):
 
 def planet_metrics(row):
     metrics = {field: metric(row, field) for field in FIELDS}
-    # PSCompPars supplies equilibrium temperature, which is independent of this input to the ESI.
+    # Для полного ESI нужна температура поверхности. В PSCompPars есть равновесная.
     metrics["surface_temperature"] = None
     circumbinary = row["cb_flag"] == "1"
     axis = central(metrics["axis"])
     if axis and row["discoverymethod"] in {"Microlensing", "Imaging"}:
-        # The archive can use this column for projected separation for these methods.
+        # В этом поле может быть проекция расстояния вместо полуоси.
         metrics["axis"] = None
         axis = None
     if not positive(axis) and not circumbinary:
@@ -368,7 +368,7 @@ def read_csv(payload):
 
 
 def retained_catalog_hosts():
-    # Preserve links to planets from earlier rankings across snapshot updates.
+    # Сохраняем ссылки на планеты из прошлых выпусков рейтинга.
     hosts = set()
     for path in (BUNDLED, LOCAL):
         try:

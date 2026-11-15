@@ -31,7 +31,7 @@ export function createSolarSky(canvas) {
         const radius = Math.sqrt(1 - z * z);
         const x = Math.cos(longitude) * radius;
         const y = Math.sin(longitude) * radius;
-        // An inclined band of denser stars crosses the celestial sphere.
+        // В наклонной полосе небесной сферы звёзд больше.
         return [x, y * .76 - z * .65, y * .65 + z * .76, random()];
     });
     const nebula = nebulaTexture();

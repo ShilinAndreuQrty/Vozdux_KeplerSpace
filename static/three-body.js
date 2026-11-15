@@ -1,490 +1,897 @@
 import { showToast } from "./three-body-toast.js";
-(()=>{
-const c=document.getElementById("tb-canvas");if(!c)return;
-const $=id=>document.getElementById(id),g=c.getContext("2d");
-const AU_KM = 149597870.7;
-const DAY_S = 86400;
-const G = 2.959122082855911e-4;
-const KM_S_TO_AU_DAY = DAY_S / AU_KM;
-const SQRT_G = Math.sqrt(G);
-const DT = 0.01;
-const COLLISION_DISTANCE = 0.01;
-const EJECTION_DISTANCE = 10;
-const C = ["#8ddcff","#ffc58e","#c7a5ff"];
-const P={
-// Figure-eight: outer bodies are symmetric about the COM; central velocity is -2 times either outer velocity.
-figure8:[[-.97000436,.24308753,.466203685,.43236573,1],[.97000436,-.24308753,.466203685,.43236573,1],[0,0,-.93240737,-.86473146,1]],
-triangle:[[0,0,0,0,1],[1.2,0,0,0,1],[.6,1.0392304845,0,0,1]],
-chaos:[[-1.05,.25,.12,.55,1],[.82,.52,-.28,-.12,1],[.12,-.82,.34,-.18,1]]};
-let B=[],INITIAL=[],DRAFT={},DIRTY={},T=[[],[],[]],
-    EVENTS=[],EVENT_KEYS=new Set(),
-    sel=-1,run=false,time=0,speed=32,acc=0,last=0,
-    drag=-1,vectorDrag=false,dragPending=false,
-    dragStart=null,dragTimer=null,
-    V={x:0,y:0,s:100},activePreset="figure8";
-const STABILITY_CHECK_DAYS = 500;
-const EJECTION_CONFIRM_DAYS = 20;
 
-let ejectionSince = {};
-let maxSeparation = 0;
-let stabilityReported = false;
-function markCustom(){
-    $("tb-preset").value="custom";
-}
-const clamp=(x,a,b)=>Math.max(a,Math.min(b,x)),fmt=(x,n=3)=>Number(x).toFixed(n).replace(".",",");
-function setStatus(message) {
-    $("tb-status").textContent = message;
-}
-function hasPendingChanges() {
-    return Object.keys(DIRTY).length > 0;
-}
+(() => {
+    const canvas = document.getElementById("tb-canvas");
+    if (!canvas) return;
 
-function updateStartControl() {
-    const eventStop = EVENTS.some(
-        e => e.type === "collision" || e.type === "ejection"
-    );
+    const byId = id => document.getElementById(id);
+    const context = canvas.getContext("2d");
 
-    $("tb-start").disabled = hasPendingChanges() || eventStop;
-}
+    // Модель считает в а.е., сутках и массах Солнца.
+    const AU_KM = 149597870.7;
+    const DAY_S = 86400;
+    const G = 2.959122082855911e-4;
+    const KM_S_TO_AU_DAY = DAY_S / AU_KM;
+    const SQRT_G = Math.sqrt(G);
+    const STEP_DAYS = 0.01;
+    const COLLISION_DISTANCE = 0.01;
+    const EJECTION_DISTANCE = 10;
+    const STABILITY_CHECK_DAYS = 500;
+    const EJECTION_CONFIRM_DAYS = 20;
+    const BODY_COLORS = ["#8ddcff", "#ffc58e", "#c7a5ff"];
 
-function markPendingChange() {if (sel < 0) return;DIRTY[sel] = true;if (run) {run = false;acc = 0;$("tb-start").textContent = "Продолжить";}updateStartControl();setStatus("Есть несохранённые изменения. Примени их или нажми «Отмена».");}
-function setV(b,v,a){ let q=a*Math.PI/180; let w=v*KM_S_TO_AU_DAY; b.vx=w*Math.cos(q); b.vy=w*Math.sin(q); };
-const vel=b=>Math.hypot(b.vx,b.vy)/KM_S_TO_AU_DAY;
-function randomChaos(){
-    const bodies=[];
-    const minDistance=0.65;
+    // Порядок значений в пресете — x, y, vx, vy, масса.
+    const PRESETS = {
+        figure8: [
+            [-0.97000436, 0.24308753, 0.466203685, 0.43236573, 1],
+            [0.97000436, -0.24308753, 0.466203685, 0.43236573, 1],
+            [0, 0, -0.93240737, -0.86473146, 1]
+        ],
+        triangle: [
+            [0, 0, 0, 0, 1],
+            [1.2, 0, 0, 0, 1],
+            [0.6, 1.0392304845, 0, 0, 1]
+        ],
+        chaos: [
+            [-1.05, 0.25, 0.12, 0.55, 1],
+            [0.82, 0.52, -0.28, -0.12, 1],
+            [0.12, -0.82, 0.34, -0.18, 1]
+        ]
+    };
+    let bodies = [];
+    let initialBodies = [];
+    let velocityDrafts = {};
+    let pendingChanges = {};
+    let trails = [[], [], []];
+    let events = [];
+    const eventKeys = new Set();
+    let selectedIndex = -1;
+    let running = false;
+    let time = 0;
+    let speed = 32;
+    let timeAccumulator = 0;
+    let lastFrameTime = 0;
+    let draggedIndex = -1;
+    let vectorDrag = false;
+    let dragPending = false;
+    let dragStart = null;
+    let dragTimer = null;
+    const viewport = { x: 0, y: 0, scale: 100 };
+    let activePreset = "figure8";
+    let ejectionSince = {};
+    let maxSeparation = 0;
+    let stabilityReported = false;
 
-    // Случайно размещаем три тела,
-    // не допуская слишком тесного начального сближения.
-    for(let i=0;i<3;i++){
-        let body, attempts=0;
+    const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+    const formatNumber = (value, digits = 3) => Number(value).toFixed(digits).replace(".", ",");
 
-        do{
-            body={
-                x:(Math.random()*2-1)*1.2,
-                y:(Math.random()*2-1)*1.2
-            };
-            attempts++;
-        }while(
-            bodies.some(b=>
-                Math.hypot(body.x-b.x,body.y-b.y)<minDistance
-            ) && attempts<100
-        );
-
-        bodies.push(body);
+    function markCustom() {
+        byId("tb-preset").value = "custom";
     }
 
-    // Случайные начальные скорости.
-    return bodies.map(b=>[
-        b.x,
-        b.y,
-        (Math.random()*0.4-0.2),
-        (Math.random()*0.4-0.2),
-        1
-    ]);
-}
-function preset(name){
-    activePreset=name;
-
-    const source=name==="chaos"?randomChaos():P[name];
-
-    B=source.map(a=>({
-        x:a[0],
-        y:a[1],
-        vx:a[2]*SQRT_G,
-        vy:a[3]*SQRT_G,
-        m:a[4]
-    }));
-    if(name==="triangle"){
-        const side=1.2, m=B.reduce((s,b)=>s+b.m,0), cx=B.reduce((s,b)=>s+b.m*b.x,0)/m, cy=B.reduce((s,b)=>s+b.m*b.y,0)/m;
-        const w=Math.sqrt(G*m/(side**3));
-        B.forEach(b=>{const x=b.x-cx,y=b.y-cy;b.x=x;b.y=y;b.vx=-w*y;b.vy=w*x});
+    function setStatus(message) {
+        byId("tb-status").textContent = message;
     }
-    const totalMass=B.reduce((s,b)=>s+b.m,0);
 
-    const cx=B.reduce((s,b)=>s+b.m*b.x,0)/totalMass;
-    const cy=B.reduce((s,b)=>s+b.m*b.y,0)/totalMass;
+    function hasPendingChanges() {
+        return Object.keys(pendingChanges).length > 0;
+    }
 
-    const cvx=B.reduce((s,b)=>s+b.m*b.vx,0)/totalMass;
-    const cvy=B.reduce((s,b)=>s+b.m*b.vy,0)/totalMass;
+    function updateStartControl() {
+        const eventStop = events.some(event => event.type === "collision" || event.type === "ejection");
 
-    B.forEach(b=>{
-        b.x-=cx;
-        b.y-=cy;
-        b.vx-=cvx;
-        b.vy-=cvy;
-    });
-    INITIAL=B.map(b=>({...b}));DRAFT={};DIRTY={};sel=-1;editor();resetAll();
-}
-function accels(s){return s.map((b,i)=>{let ax=0,ay=0;s.forEach((o,j)=>{if(i===j)return;let x=o.x-b.x,y=o.y-b.y,r2=x*x+y*y;if(r2<1e-12)return;let z=G*o.m/(r2*Math.sqrt(r2));ax+=x*z;ay+=y*z});return{ax,ay}})}
-function deriv(s){let a=accels(s);return s.map((b,i)=>({x:b.vx,y:b.vy,vx:a[i].ax,vy:a[i].ay}))}
-function shift(s,k,f){return s.map((b,i)=>({...b,x:b.x+k[i].x*f,y:b.y+k[i].y*f,vx:b.vx+k[i].vx*f,vy:b.vy+k[i].vy*f}))}
+        byId("tb-start").disabled = hasPendingChanges() || eventStop;
+    }
 
-function addEvent(type, bodies, message) {
-    const key = type + ":" + bodies.slice().sort((a,b)=>a-b).join("-");
-    if (EVENT_KEYS.has(key)) return;
+    function markPendingChange() {
+        if (selectedIndex < 0) return;
+        pendingChanges[selectedIndex] = true;
+        if (running) {
+            running = false;
+            timeAccumulator = 0;
+            byId("tb-start").textContent = "Продолжить";
+        }
+        updateStartControl();
+        setStatus("Есть несохранённые изменения. Примени их или нажми «Отмена».");
+    }
 
-    EVENT_KEYS.add(key);
-    EVENTS.push({ type, bodies, message, time });
-    renderEvents();
-}
+    function setVelocity(body, velocityKmS, angleDegrees) {
+        const angle = (angleDegrees * Math.PI) / 180;
+        const velocity = velocityKmS * KM_S_TO_AU_DAY;
+        body.vx = velocity * Math.cos(angle);
+        body.vy = velocity * Math.sin(angle);
+    }
 
-function detectEvents() {
-    let collision = false;
-    let ejection = false;
+    const speedKmS = body => Math.hypot(body.vx, body.vy) / KM_S_TO_AU_DAY;
 
-    for (let i = 0; i < B.length; i++) {
-        for (let j = i + 1; j < B.length; j++) {
-            const distance = Math.hypot(
-                B[i].x - B[j].x,
-                B[i].y - B[j].y
+    function randomChaos() {
+        const bodies = [];
+        const minDistance = 0.65;
+
+        // При случайном размещении избегаем тесного сближения тел.
+        for (let i = 0; i < 3; i++) {
+            let body,
+                attempts = 0;
+
+            do {
+                body = {
+                    x: (Math.random() * 2 - 1) * 1.2,
+                    y: (Math.random() * 2 - 1) * 1.2
+                };
+                attempts++;
+            } while (
+                bodies.some(other => Math.hypot(body.x - other.x, body.y - other.y) < minDistance) &&
+                attempts < 100
             );
 
-            if (distance <= COLLISION_DISTANCE) {
-                addEvent(
-                    "collision",
-                    [i, j],
-                    "Столкновение тел " + (i + 1) + " и " + (j + 1)
-                );
-                collision = true;
+            bodies.push(body);
+        }
+
+        return bodies.map(body => [
+            body.x,
+            body.y,
+            Math.random() * 0.4 - 0.2,
+            Math.random() * 0.4 - 0.2,
+            1
+        ]);
+    }
+
+    function preset(name) {
+        activePreset = name;
+
+        const source = name === "chaos" ? randomChaos() : PRESETS[name];
+
+        bodies = source.map(entry => ({
+            x: entry[0],
+            y: entry[1],
+            vx: entry[2] * SQRT_G,
+            vy: entry[3] * SQRT_G,
+            m: entry[4]
+        }));
+        if (name === "triangle") {
+            const side = 1.2;
+            const triangleMass = bodies.reduce((sum, body) => sum + body.m, 0);
+            const centerX = bodies.reduce((sum, body) => sum + body.m * body.x, 0) / triangleMass;
+            const centerY = bodies.reduce((sum, body) => sum + body.m * body.y, 0) / triangleMass;
+            const angularSpeed = Math.sqrt((G * triangleMass) / side ** 3);
+            bodies.forEach(body => {
+                const x = body.x - centerX;
+                const y = body.y - centerY;
+                body.x = x;
+                body.y = y;
+                body.vx = -angularSpeed * y;
+                body.vy = angularSpeed * x;
+            });
+        }
+
+        // Переходим в систему отсчёта центра масс.
+        const totalMass = bodies.reduce((sum, body) => sum + body.m, 0);
+        const centerX = bodies.reduce((sum, body) => sum + body.m * body.x, 0) / totalMass;
+        const centerY = bodies.reduce((sum, body) => sum + body.m * body.y, 0) / totalMass;
+
+        const centerVx = bodies.reduce((sum, body) => sum + body.m * body.vx, 0) / totalMass;
+        const centerVy = bodies.reduce((sum, body) => sum + body.m * body.vy, 0) / totalMass;
+
+        bodies.forEach(body => {
+            body.x -= centerX;
+            body.y -= centerY;
+            body.vx -= centerVx;
+            body.vy -= centerVy;
+        });
+        initialBodies = bodies.map(body => ({ ...body }));
+        velocityDrafts = {};
+        pendingChanges = {};
+        selectedIndex = -1;
+        updateEditor();
+        resetAll();
+    }
+
+    function accelerations(state) {
+        return state.map((body, i) => {
+            let ax = 0;
+            let ay = 0;
+            state.forEach((other, j) => {
+                if (i === j) return;
+                const dx = other.x - body.x;
+                const dy = other.y - body.y;
+                const distanceSquared = dx * dx + dy * dy;
+                if (distanceSquared < 1e-12) return;
+                const factor = (G * other.m) / (distanceSquared * Math.sqrt(distanceSquared));
+                ax += dx * factor;
+                ay += dy * factor;
+            });
+            return { ax, ay };
+        });
+    }
+
+    function derivatives(state) {
+        const accelerationsByBody = accelerations(state);
+        return state.map((body, i) => ({
+            x: body.vx,
+            y: body.vy,
+            vx: accelerationsByBody[i].ax,
+            vy: accelerationsByBody[i].ay
+        }));
+    }
+
+    function shift(state, derivative, offset) {
+        return state.map((body, i) => ({
+            ...body,
+            x: body.x + derivative[i].x * offset,
+            y: body.y + derivative[i].y * offset,
+            vx: body.vx + derivative[i].vx * offset,
+            vy: body.vy + derivative[i].vy * offset
+        }));
+    }
+
+    function addEvent(type, bodies, message) {
+        const key = type + ":" + bodies.slice().sort((a, b) => a - b).join("-");
+        if (eventKeys.has(key)) return;
+
+        eventKeys.add(key);
+        events.push({ type, bodies, message, time });
+        renderEvents();
+    }
+
+    function detectEvents() {
+        let collision = false;
+        let ejection = false;
+
+        for (let i = 0; i < bodies.length; i++) {
+            for (let j = i + 1; j < bodies.length; j++) {
+                const distance = Math.hypot(bodies[i].x - bodies[j].x, bodies[i].y - bodies[j].y);
+
+                if (distance <= COLLISION_DISTANCE) {
+                    addEvent("collision", [i, j], "Столкновение тел " + (i + 1) + " и " + (j + 1));
+                    collision = true;
+                }
             }
+        }
+
+        for (let i = 0; i < bodies.length; i++) {
+            if (eventKeys.has("ejection:" + i)) continue;
+
+            const pair = bodies.filter((_, j) => j !== i);
+            const first = pair[0],
+                second = pair[1],
+                body = bodies[i];
+            const mass = first.m + second.m;
+
+            const centerX = (first.m * first.x + second.m * second.x) / mass;
+            const centerY = (first.m * first.y + second.m * second.y) / mass;
+            const centerVx = (first.m * first.vx + second.m * second.vx) / mass;
+            const centerVy = (first.m * first.vy + second.m * second.vy) / mass;
+
+            const rx = body.x - centerX;
+            const ry = body.y - centerY;
+            const rvx = body.vx - centerVx;
+            const rvy = body.vy - centerVy;
+
+            const distance = Math.hypot(rx, ry);
+            const radial = rx * rvx + ry * rvy;
+
+            // Для выброса нужна положительная энергия относительно оставшейся пары.
+            const energy = 0.5 * (rvx * rvx + rvy * rvy) - (G * mass) / Math.max(distance, 1e-12);
+
+            const candidate = distance >= EJECTION_DISTANCE && radial > 0 && energy > 0;
+
+            if (candidate) {
+                if (ejectionSince[i] === undefined) {
+                    ejectionSince[i] = time;
+                }
+
+                if (time - ejectionSince[i] >= EJECTION_CONFIRM_DAYS) {
+                    addEvent("ejection", [i], "Выброс тела " + (i + 1));
+                    ejection = true;
+                }
+            } else {
+                delete ejectionSince[i];
+            }
+        }
+
+        const distances = [];
+
+        for (let i = 0; i < bodies.length; i++) {
+            for (let j = i + 1; j < bodies.length; j++) {
+                distances.push(Math.hypot(bodies[i].x - bodies[j].x, bodies[i].y - bodies[j].y));
+            }
+        }
+
+        maxSeparation = Math.max(maxSeparation, ...distances);
+
+        if (
+            time >= STABILITY_CHECK_DAYS &&
+            !stabilityReported &&
+            events.length === 0 &&
+            maxSeparation < EJECTION_DISTANCE
+        ) {
+            stabilityReported = true;
+
+            addEvent("stable", [], "Предварительно устойчивое движение за 500 суток");
+        }
+
+        if (collision || ejection) {
+            running = false;
+            timeAccumulator = 0;
+
+            byId("tb-start").disabled = true;
+            byId("tb-start").textContent = collision ? "Столкновение" : "Выброс тела";
+            setStatus("Модель остановлена");
+            showToast(
+                collision
+                    ? "Модель остановлена: обнаружено столкновение"
+                    : "Модель остановлена: обнаружен выброс тела"
+            );
         }
     }
 
-    for (let i = 0; i < B.length; i++) {
-        if (EVENT_KEYS.has("ejection:" + i)) continue;
+    function renderEvents() {
+        const panel = byId("tb-events");
+        if (!panel) return;
 
-        const pair = B.filter((_, j) => j !== i);
-        const a = pair[0], b = pair[1], body = B[i];
-        const mass = a.m + b.m;
-
-        const cx = (a.m*a.x + b.m*b.x) / mass;
-        const cy = (a.m*a.y + b.m*b.y) / mass;
-        const cvx = (a.m*a.vx + b.m*b.vx) / mass;
-        const cvy = (a.m*a.vy + b.m*b.vy) / mass;
-
-        const rx = body.x - cx;
-        const ry = body.y - cy;
-        const rvx = body.vx - cvx;
-        const rvy = body.vy - cvy;
-
-        const distance = Math.hypot(rx, ry);
-        const radial = rx*rvx + ry*rvy;
-
-        const energy = 0.5*(rvx*rvx + rvy*rvy)
-            - G*mass/Math.max(distance, 1e-12);
-
-        const candidate =
-            distance >= EJECTION_DISTANCE &&
-            radial > 0 &&
-            energy > 0;
-
-        if (candidate) {
-            if (ejectionSince[i] === undefined) {
-                ejectionSince[i] = time;
-            }
-
-            if (time - ejectionSince[i] >= EJECTION_CONFIRM_DAYS) {
-                addEvent(
-                    "ejection",
-                    [i],
-                    "Выброс тела " + (i + 1)
-                );
-                ejection = true;
-            }
-        } else {
-            delete ejectionSince[i];
-        }
-    }
-
-    const distances = [];
-
-    for (let i = 0; i < B.length; i++) {
-        for (let j = i + 1; j < B.length; j++) {
-            distances.push(Math.hypot(
-                B[i].x - B[j].x,
-                B[i].y - B[j].y
-            ));
-        }
-    }
-
-    maxSeparation = Math.max(maxSeparation, ...distances);
-
-    if (
-        time >= STABILITY_CHECK_DAYS &&
-        !stabilityReported &&
-        EVENTS.length === 0 &&
-        maxSeparation < EJECTION_DISTANCE
-    ) {
-        stabilityReported = true;
-
-        addEvent(
-            "stable",
-            [],
-            "Предварительно устойчивое движение за 500 суток"
-        );
-    }
-
-    if (collision || ejection) {
-        run = false;
-        acc = 0;
-
-        $("tb-start").disabled = true;
-        $("tb-start").textContent = collision ? "Столкновение" : "Выброс тела";
-        setStatus("Модель остановлена");
-        showToast(
-            collision
-                ? "Модель остановлена: обнаружено столкновение"
-                : "Модель остановлена: обнаружен выброс тела"
-        );
-    }
-}
-
-function renderEvents() {
-    const panel = $("tb-events");
-    if (!panel) return;
-
-    if (!EVENTS.length) {
-        panel.innerHTML =
-            "<strong>События:</strong> пока не обнаружены";
-        return;
-    }
-
-    panel.innerHTML =
-        "<strong>Обнаруженные события:</strong><ul>" +
-        EVENTS.map(e =>
-            "<li>" + e.message + " — "
-            + fmt(e.time, 2) + " суток</li>"
-        ).join("") +
-        "</ul>";
-}
-
-function clearEvents() {
-    EVENTS = [];
-    EVENT_KEYS.clear();
-    ejectionSince = {};
-    maxSeparation = 0;
-    stabilityReported = false;
-    renderEvents();
-}
-
-function step() {
-    let a = deriv(B);
-    let b = deriv(shift(B, a, DT/2));
-    let d = deriv(shift(B, b, DT/2));
-    let e = deriv(shift(B, d, DT));
-
-    B = B.map((p, i) => ({
-        ...p,
-        x: p.x + DT/6*(a[i].x + 2*b[i].x + 2*d[i].x + e[i].x),
-        y: p.y + DT/6*(a[i].y + 2*b[i].y + 2*d[i].y + e[i].y),
-        vx: p.vx + DT/6*(a[i].vx + 2*b[i].vx + 2*d[i].vx + e[i].vx),
-        vy: p.vy + DT/6*(a[i].vy + 2*b[i].vy + 2*d[i].vy + e[i].vy)
-    }));
-
-    time += DT;
-
-    B.forEach((b, i) => {
-        T[i].push({x:b.x, y:b.y});
-        if (T[i].length > 2000) T[i].shift();
-    });
-
-    detectEvents();
-}
-function energy(){let e=0;B.forEach(b=>e+=.5*b.m*(b.vx*b.vx+b.vy*b.vy));for(let i=0;i<3;i++)for(let j=i+1;j<3;j++){let x=B[j].x-B[i].x,y=B[j].y-B[i].y;e-=G*B[i].m*B[j].m/Math.max(Math.sqrt(x*x+y*y),1e-9)}return e}
-function resize(){let r=c.getBoundingClientRect(),d=Math.min(devicePixelRatio||1,2);c.width=r.width*d;c.height=r.height*d;g.setTransform(d,0,0,d,0,0);V.x=r.width/2;V.y=r.height/2;V.s=Math.min(r.width,r.height)/4.67}
-const scr=p=>({x:V.x+p.x*V.s,y:V.y-p.y*V.s}),world=p=>({x:(p.x-V.x)/V.s,y:-(p.y-V.y)/V.s});
-function arrow(ctx,x,y,dx,dy,col){let a=Math.atan2(dy,dx),L=12;ctx.strokeStyle=col;ctx.fillStyle=col;ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x+dx,y+dy);ctx.stroke();ctx.beginPath();ctx.moveTo(x+dx,y+dy);ctx.lineTo(x+dx-L*Math.cos(a-.45),y+dy-L*Math.sin(a-.45));ctx.lineTo(x+dx-L*Math.cos(a+.45),y+dy-L*Math.sin(a+.45));ctx.fill()}
-function grid(w,h){g.save();let st=V.s>190?.25:V.s>80?.5:1,l=-V.x/V.s,r=(w-V.x)/V.s,b=-(h-V.y)/V.s,t=V.y/V.s;g.strokeStyle="#9eb7d522";g.fillStyle="#9eb7d5";g.font="10px sans-serif";for(let x=Math.ceil(l/st)*st;x<=r;x+=st){let px=V.x+x*V.s;g.beginPath();g.moveTo(px,0);g.lineTo(px,h);g.stroke();if(x)g.fillText(String(+x.toFixed(2)),px+3,V.y+12)}for(let y=Math.ceil(b/st)*st;y<=t;y+=st){let py=V.y-y*V.s;g.beginPath();g.moveTo(0,py);g.lineTo(w,py);g.stroke();if(y)g.fillText(String(+y.toFixed(2)),V.x+5,py-3)}g.strokeStyle="#c4d5eb88";g.lineWidth=1.4;g.beginPath();g.moveTo(0,V.y);g.lineTo(w,V.y);g.moveTo(V.x,0);g.lineTo(V.x,h);g.stroke();g.fillStyle="#d3dfef";g.fillText("X, а.е.",w-48,V.y-7);g.fillText("Y, а.е.",V.x+7,13);g.restore()}
-function draw(){let w=c.clientWidth,h=c.clientHeight;g.clearRect(0,0,w,h);grid(w,h);T.forEach((a,i)=>{if(a.length<2)return;g.beginPath();a.forEach((p,j)=>{let q=scr(p);j?g.lineTo(q.x,q.y):g.moveTo(q.x,q.y)});g.strokeStyle=C[i]+"99";g.lineWidth=1.5;g.stroke()});B.forEach((b,i)=>{let p=scr(b),rad=10+Math.min(7,Math.sqrt(b.m)*2);let glow=g.createRadialGradient(p.x,p.y,1,p.x,p.y,rad*3);glow.addColorStop(0,C[i]+"99");glow.addColorStop(1,C[i]+"00");g.fillStyle=glow;g.beginPath();g.arc(p.x,p.y,rad*3,0,7);g.fill();g.fillStyle=C[i];g.beginPath();g.arc(p.x,p.y,rad,0,7);g.fill();g.strokeStyle=sel===i?"white":"#ffffff99";g.lineWidth=sel===i?2.5:1;g.stroke();g.fillStyle="#e4edfa";g.font="11px sans-serif";g.fillText("Тело "+(i+1),p.x+11,p.y-11);let d=(!run&&sel===i&&DIRTY[i]&&DRAFT[i])?DRAFT[i]:b;let a=Math.atan2(d.vy,d.vx),len=clamp(vel(d)*2.0,16,90);arrow(g,p.x,p.y,Math.cos(a)*len,-Math.sin(a)*len,C[i])});$("tb-time").textContent=fmt(time,2)+" суток";}
-function reset(){
-    run=false;
-    time=0;
-    acc=0;
-    T=B.map(b=>[{x:b.x,y:b.y}]);
-    clearEvents();
-
-    $("tb-start").disabled = false;
-    updateStartControl();
-    setStatus("Модель остановлена");
-    draw();
-}
-function resetAll(){
-    B=INITIAL.map(b=>({...b}));
-    DRAFT={};
-    DIRTY={};
-    $("tb-preset").value=activePreset;
-    reset();
-    editor();
-}
-function resetSelected(){if(sel<0)return;B[sel]={...INITIAL[sel]};delete DRAFT[sel];delete DIRTY[sel];reset();editor()}
-function draftFor(i){if(!DRAFT[i])DRAFT[i]={vx:B[i].vx,vy:B[i].vy};return DRAFT[i]}
-function editor(){let f=$("tb-fields"),h=$("tb-help");if(sel<0){f.hidden=true;h.hidden=false;$("tb-editor-title").textContent="Выбери тело";return}let b=B[sel],d=draftFor(sel);f.hidden=false;h.hidden=true;$("tb-editor-title").textContent="Тело "+(sel+1);$("tb-mass").value=b.m;$("tb-mass-range").value=clamp(b.m,.0001,10);$("tb-mass-out").textContent=fmt(b.m,5);$("tb-x").value=b.x.toFixed(5);$("tb-y").value=b.y.toFixed(5);$("tb-vel").value=(Math.hypot(d.vx,d.vy)/KM_S_TO_AU_DAY).toFixed(3);$("tb-vel-range").value=clamp(Math.hypot(d.vx,d.vy)/KM_S_TO_AU_DAY,0,100);$("tb-vel-out").textContent=fmt(Math.hypot(d.vx,d.vy)/KM_S_TO_AU_DAY);$("tb-angle").value=(Math.atan2(d.vy,d.vx)*180/Math.PI).toFixed(2)}
-function clearSelection(){
-    if(sel<0)return;
-
-    const old=sel;
-    const hadChanges=!!DIRTY[old];
-
-    delete DRAFT[old];
-    delete DIRTY[old];
-    updateStartControl();
-
-    sel=-1;
-    drag=-1;
-    vectorDrag=false;
-
-    editor();
-    draw();
-
-    if(hadChanges){
-        $("tb-status").textContent="Неподтверждённые изменения отменены";
-    }
-}
-function read(){return{m:+$("tb-mass").value,x:+$("tb-x").value,y:+$("tb-y").value,v:+$("tb-vel").value,a:+$("tb-angle").value}}
-function commitSelectedChanges(p) {if (sel < 0) return;const d = draftFor(sel);B[sel].m = p.m;B[sel].x = p.x;B[sel].y = p.y;B[sel].vx = d.vx;B[sel].vy = d.vy;delete DRAFT[sel];delete DIRTY[sel];}
-function applyMass(all) {const p = read();if (!Number.isFinite(p.m) || p.m <= 0 || p.m > 1000) {showToast("Масса должна быть больше нуля и не превышать 1000 масс Солнца.");return;}if (sel >= 0) {commitSelectedChanges(p);}markCustom();if (all) {B.forEach(b => b.m = p.m);}setStatus(all? "Масса применена ко всем телам": "Масса применена к телу");reset();editor();}
-function applyVelocity(all) {const p = read();if (!Number.isFinite(p.v) || p.v < 0 || p.v > 10000) {showToast("Скорость должна быть от 0 до 10000 км/с.");return;}if (sel >= 0) {commitSelectedChanges(p);}markCustom();if (all) {B.forEach(b => {const angle = Math.atan2(b.vy, b.vx);const velocity = p.v * KM_S_TO_AU_DAY;b.vx = velocity * Math.cos(angle);b.vy = velocity * Math.sin(angle);});} else if (sel >= 0) {setV(B[sel], p.v, p.a);}setStatus(all? "Скорость применена ко всем телам": "Скорость применена к телу");reset();editor();}
-function updateDraftFromInputs(){if(sel<0)return;let v=+$("tb-vel").value,a=+$("tb-angle").value;if(!Number.isFinite(v)||!Number.isFinite(a))return;setV(draftFor(sel),v,a);markPendingChange();markCustom();$("tb-vel-out").textContent=fmt(v);$("tb-vel-range").value=clamp(v,0,100);draw()}
-c.addEventListener("pointerdown",e=>{let r=c.getBoundingClientRect(),p={x:e.clientX-r.left,y:e.clientY-r.top};
-    if(sel>=0){
-        let b=B[sel],d=draftFor(sel),q=scr(b),
-            a=Math.atan2(d.vy,d.vx),
-            len=clamp(vel(d)*2.0,16,90),
-            tip={x:q.x+Math.cos(a)*len,y:q.y-Math.sin(a)*len};
-
-        if(Math.hypot(tip.x-p.x,tip.y-p.y)<24){
-            vectorDrag=true;
-            c.setPointerCapture(e.pointerId);
+        if (!events.length) {
+            panel.innerHTML = "<strong>События:</strong> пока не обнаружены";
             return;
         }
+
+        panel.innerHTML =
+            "<strong>Обнаруженные события:</strong><ul>" +
+            events
+                .map(event => "<li>" + event.message + " — " + formatNumber(event.time, 2) + " суток</li>")
+                .join("") +
+            "</ul>";
     }
-    let i=B.findIndex(b=>{let q=scr(b);return Math.hypot(q.x-p.x,q.y-p.y)<19});
-    if(i>=0){
-        if(i!==sel && sel>=0){
-            const hadChanges=!!DIRTY[sel];
-            delete DRAFT[sel];
-            delete DIRTY[sel];
-            updateStartControl();
-            if(hadChanges){
-            $("tb-status").textContent="Неподтверждённые изменения отменены";
+
+    function clearEvents() {
+        events = [];
+        eventKeys.clear();
+        ejectionSince = {};
+        maxSeparation = 0;
+        stabilityReported = false;
+        renderEvents();
+    }
+
+    function step() {
+        // Шаг метода Рунге — Кутты четвёртого порядка.
+        const k1 = derivatives(bodies);
+        const k2 = derivatives(shift(bodies, k1, STEP_DAYS / 2));
+        const k3 = derivatives(shift(bodies, k2, STEP_DAYS / 2));
+        const k4 = derivatives(shift(bodies, k3, STEP_DAYS));
+
+        bodies = bodies.map((body, i) => ({
+            ...body,
+            x: body.x + (STEP_DAYS / 6) * (k1[i].x + 2 * k2[i].x + 2 * k3[i].x + k4[i].x),
+            y: body.y + (STEP_DAYS / 6) * (k1[i].y + 2 * k2[i].y + 2 * k3[i].y + k4[i].y),
+            vx: body.vx + (STEP_DAYS / 6) * (k1[i].vx + 2 * k2[i].vx + 2 * k3[i].vx + k4[i].vx),
+            vy: body.vy + (STEP_DAYS / 6) * (k1[i].vy + 2 * k2[i].vy + 2 * k3[i].vy + k4[i].vy)
+        }));
+
+        time += STEP_DAYS;
+
+        bodies.forEach((body, i) => {
+            trails[i].push({ x: body.x, y: body.y });
+            if (trails[i].length > 2000) trails[i].shift();
+        });
+
+        detectEvents();
+    }
+
+    function energy() {
+        let total = 0;
+        bodies.forEach(body => (total += 0.5 * body.m * (body.vx * body.vx + body.vy * body.vy)));
+        for (let i = 0; i < 3; i++) {
+            for (let j = i + 1; j < 3; j++) {
+                const dx = bodies[j].x - bodies[i].x;
+                const dy = bodies[j].y - bodies[i].y;
+                total -= (G * bodies[i].m * bodies[j].m) / Math.max(Math.sqrt(dx * dx + dy * dy), 1e-9);
             }
         }
-        sel=i;
-        editor();
-
-        dragPending=true;
-        dragStart=p;
-        drag=-1;
-
-        c.setPointerCapture(e.pointerId);
-
-        dragTimer=setTimeout(()=>{
-            if(dragPending){
-                drag=i;
-                dragPending=false;
-            }
-        },65);
-
-        draw();
+        return total;
     }
-    else if(sel>=0){
-    clearSelection();
+
+    function resize() {
+        const bounds = canvas.getBoundingClientRect();
+        const pixelRatio = Math.min(devicePixelRatio || 1, 2);
+        canvas.width = bounds.width * pixelRatio;
+        canvas.height = bounds.height * pixelRatio;
+        context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+        viewport.x = bounds.width / 2;
+        viewport.y = bounds.height / 2;
+        viewport.scale = Math.min(bounds.width, bounds.height) / 4.67;
     }
-});
-c.addEventListener("pointermove",e=>{
-  let r=c.getBoundingClientRect(),
-      p={x:e.clientX-r.left,y:e.clientY-r.top};
 
-  if(vectorDrag&&sel>=0&&!run){
-    let b=scr(B[sel]),
-        dx=p.x-b.x,
-        dy=b.y-p.y,
-        d=draftFor(sel),
-        v=Math.hypot(d.vx,d.vy)/KM_S_TO_AU_DAY,
-        a=Math.atan2(dy,dx)*180/Math.PI;
+    // Ось Y холста направлена вниз.
+    const toScreen = point => ({
+        x: viewport.x + point.x * viewport.scale,
+        y: viewport.y - point.y * viewport.scale
+    });
+    const toSimulation = point => ({
+        x: (point.x - viewport.x) / viewport.scale,
+        y: -(point.y - viewport.y) / viewport.scale
+    });
 
-    setV(d,v,a);
-    markPendingChange();
-    markCustom();
-    editor();
-    draw();
-    return;
-  }
-
-  if(dragPending){
-    if(Math.hypot(p.x-dragStart.x,p.y-dragStart.y)>5){
-        clearTimeout(dragTimer);
-        dragTimer=null;
-        dragPending=false;
+    function drawArrow(context, x, y, dx, dy, color) {
+        const angle = Math.atan2(dy, dx);
+        const headLength = 12;
+        context.strokeStyle = color;
+        context.fillStyle = color;
+        context.lineWidth = 2;
+        context.beginPath();
+        context.moveTo(x, y);
+        context.lineTo(x + dx, y + dy);
+        context.stroke();
+        context.beginPath();
+        context.moveTo(x + dx, y + dy);
+        context.lineTo(
+            x + dx - headLength * Math.cos(angle - 0.45),
+            y + dy - headLength * Math.sin(angle - 0.45)
+        );
+        context.lineTo(
+            x + dx - headLength * Math.cos(angle + 0.45),
+            y + dy - headLength * Math.sin(angle + 0.45)
+        );
+        context.fill();
     }
-    return;
+
+    function drawGrid(width, height) {
+        context.save();
+        const { scale } = viewport;
+        const gridStep = scale > 190 ? 0.25 : scale > 80 ? 0.5 : 1;
+        const left = -viewport.x / scale;
+        const right = (width - viewport.x) / scale;
+        const bottom = -(height - viewport.y) / scale;
+        const top = viewport.y / scale;
+        context.strokeStyle = "#9eb7d522";
+        context.fillStyle = "#9eb7d5";
+        context.font = "10px sans-serif";
+        for (let x = Math.ceil(left / gridStep) * gridStep; x <= right; x += gridStep) {
+            const screenX = viewport.x + x * scale;
+            context.beginPath();
+            context.moveTo(screenX, 0);
+            context.lineTo(screenX, height);
+            context.stroke();
+            if (x) context.fillText(String(+x.toFixed(2)), screenX + 3, viewport.y + 12);
+        }
+        for (let y = Math.ceil(bottom / gridStep) * gridStep; y <= top; y += gridStep) {
+            const screenY = viewport.y - y * scale;
+            context.beginPath();
+            context.moveTo(0, screenY);
+            context.lineTo(width, screenY);
+            context.stroke();
+            if (y) context.fillText(String(+y.toFixed(2)), viewport.x + 5, screenY - 3);
+        }
+        context.strokeStyle = "#c4d5eb88";
+        context.lineWidth = 1.4;
+        context.beginPath();
+        context.moveTo(0, viewport.y);
+        context.lineTo(width, viewport.y);
+        context.moveTo(viewport.x, 0);
+        context.lineTo(viewport.x, height);
+        context.stroke();
+        context.fillStyle = "#d3dfef";
+        context.fillText("X, а.е.", width - 48, viewport.y - 7);
+        context.fillText("Y, а.е.", viewport.x + 7, 13);
+        context.restore();
     }
-    let q=world(p);
-    B[drag].x=q.x;
-    B[drag].y=q.y;
-    T[drag]=[{...q}];
-    markCustom();
-    editor();
-    draw();
-});
-function end(){
-    if(dragTimer){
-        clearTimeout(dragTimer);
-        dragTimer=null;
+
+    function render() {
+        const width = canvas.clientWidth;
+        const height = canvas.clientHeight;
+        context.clearRect(0, 0, width, height);
+        drawGrid(width, height);
+        trails.forEach((points, i) => {
+            if (points.length < 2) return;
+            context.beginPath();
+            points.forEach((point, j) => {
+                const projected = toScreen(point);
+                j ? context.lineTo(projected.x, projected.y) : context.moveTo(projected.x, projected.y);
+            });
+            context.strokeStyle = BODY_COLORS[i] + "99";
+            context.lineWidth = 1.5;
+            context.stroke();
+        });
+        bodies.forEach((body, i) => {
+            const point = toScreen(body);
+            const radius = 10 + Math.min(7, Math.sqrt(body.m) * 2);
+            const glow = context.createRadialGradient(point.x, point.y, 1, point.x, point.y, radius * 3);
+            glow.addColorStop(0, BODY_COLORS[i] + "99");
+            glow.addColorStop(1, BODY_COLORS[i] + "00");
+            context.fillStyle = glow;
+            context.beginPath();
+            context.arc(point.x, point.y, radius * 3, 0, 7);
+            context.fill();
+            context.fillStyle = BODY_COLORS[i];
+            context.beginPath();
+            context.arc(point.x, point.y, radius, 0, 7);
+            context.fill();
+            context.strokeStyle = selectedIndex === i ? "white" : "#ffffff99";
+            context.lineWidth = selectedIndex === i ? 2.5 : 1;
+            context.stroke();
+            context.fillStyle = "#e4edfa";
+            context.font = "11px sans-serif";
+            context.fillText("Тело " + (i + 1), point.x + 11, point.y - 11);
+            // До применения параметров стрелка показывает черновик скорости.
+            const velocity =
+                !running && selectedIndex === i && pendingChanges[i] && velocityDrafts[i]
+                    ? velocityDrafts[i]
+                    : body;
+            const angle = Math.atan2(velocity.vy, velocity.vx);
+            const arrowLength = clamp(speedKmS(velocity) * 2.0, 16, 90);
+            drawArrow(
+                context,
+                point.x,
+                point.y,
+                Math.cos(angle) * arrowLength,
+                -Math.sin(angle) * arrowLength,
+                BODY_COLORS[i]
+            );
+        });
+        byId("tb-time").textContent = formatNumber(time, 2) + " суток";
     }
-    dragPending=false;
-    drag=-1;
-    vectorDrag=false;
-}
-c.addEventListener("pointerup",end);c.addEventListener("pointercancel",end);
-$("tb-mass").oninput = () => {$("tb-mass-range").value = clamp(+$("tb-mass").value || .0001, .0001, 10);$("tb-mass-out").textContent = fmt(+$("tb-mass").value || 0, 5);markPendingChange();};
-$("tb-mass-range").oninput = e => {$("tb-mass").value = e.target.value;$("tb-mass-out").textContent = fmt(+e.target.value, 5);markPendingChange();};
-$("tb-x").oninput = markPendingChange;
-$("tb-y").oninput = markPendingChange;
-$("tb-vel").oninput=updateDraftFromInputs;
-$("tb-vel-range").oninput=e=>{$("tb-vel").value=e.target.value;updateDraftFromInputs()};
-$("tb-angle").oninput=updateDraftFromInputs;
-$("tb-apply").onclick = () => {if (sel < 0) return;const p = read();if (![p.m, p.x, p.y].every(Number.isFinite) ||p.m <= 0 || p.m > 1000 ||Math.abs(p.x) > 10000 ||Math.abs(p.y) > 10000) {showToast("Проверь массу и координаты.");return;}commitSelectedChanges(p);markCustom();setStatus("Параметры тела применены");reset();editor();};
-$("tb-cancel").onclick = () => {if (sel < 0) return;delete DRAFT[sel];delete DIRTY[sel];editor();updateStartControl();setStatus("Несохранённые изменения отменены");};
-$("tb-reset-selected").onclick=resetSelected;
-$("tb-mass-all").onclick=()=>applyMass(true);$("tb-velocity-all").onclick=()=>applyVelocity(true);
-$("tb-preset").onchange=e=>preset(e.target.value);
-$("tb-start").onclick = () => {if (hasPendingChanges()) {showToast("Сначала примени параметры или нажми «Отмена».");return;}run = !run;$("tb-start").textContent = run? "Остановить": "Продолжить";setStatus(run ? "Симуляция выполняется" : "Симуляция остановлена");};
-$("tb-reset").onclick=resetAll;$("tb-speed").oninput=e=>{speed=+e.target.value;$("tb-speed-out").textContent=speed+"×"};
-function frame(n) {
-    if (!last) last = n;
 
-    let dt = Math.min((n - last) / 1000, 0.05);
-    last = n;
+    function resetSimulation() {
+        running = false;
+        time = 0;
+        timeAccumulator = 0;
+        trails = bodies.map(body => [{ x: body.x, y: body.y }]);
+        clearEvents();
 
-    if (run) {
-        acc += dt * speed * 2;
-        let z = 0;
+        byId("tb-start").disabled = false;
+        updateStartControl();
+        setStatus("Модель остановлена");
+        render();
+    }
+    function resetAll() {
+        bodies = initialBodies.map(body => ({ ...body }));
+        velocityDrafts = {};
+        pendingChanges = {};
+        byId("tb-preset").value = activePreset;
+        resetSimulation();
+        updateEditor();
+    }
+    function resetSelected() {
+        if (selectedIndex < 0) return;
+        bodies[selectedIndex] = { ...initialBodies[selectedIndex] };
+        delete velocityDrafts[selectedIndex];
+        delete pendingChanges[selectedIndex];
+        resetSimulation();
+        updateEditor();
+    }
+    function draftFor(index) {
+        if (!velocityDrafts[index]) velocityDrafts[index] = { vx: bodies[index].vx, vy: bodies[index].vy };
+        return velocityDrafts[index];
+    }
+    function updateEditor() {
+        const fields = byId("tb-fields");
+        const help = byId("tb-help");
+        if (selectedIndex < 0) {
+            fields.hidden = true;
+            help.hidden = false;
+            byId("tb-editor-title").textContent = "Выбери тело";
+            return;
+        }
+        const body = bodies[selectedIndex];
+        const draft = draftFor(selectedIndex);
+        fields.hidden = false;
+        help.hidden = true;
+        byId("tb-editor-title").textContent = "Тело " + (selectedIndex + 1);
+        byId("tb-mass").value = body.m;
+        byId("tb-mass-range").value = clamp(body.m, 0.0001, 10);
+        byId("tb-mass-out").textContent = formatNumber(body.m, 5);
+        byId("tb-x").value = body.x.toFixed(5);
+        byId("tb-y").value = body.y.toFixed(5);
+        const velocityKmS = speedKmS(draft);
+        byId("tb-vel").value = velocityKmS.toFixed(3);
+        byId("tb-vel-range").value = clamp(velocityKmS, 0, 100);
+        byId("tb-vel-out").textContent = formatNumber(velocityKmS);
+        byId("tb-angle").value = ((Math.atan2(draft.vy, draft.vx) * 180) / Math.PI).toFixed(2);
+    }
+    function clearSelection() {
+        if (selectedIndex < 0) return;
 
-        while (run && acc >= DT && z++ < 500) {
-            step();
-            acc -= DT;
+        const previousIndex = selectedIndex;
+        const hadChanges = !!pendingChanges[previousIndex];
+
+        delete velocityDrafts[previousIndex];
+        delete pendingChanges[previousIndex];
+        updateStartControl();
+
+        selectedIndex = -1;
+        draggedIndex = -1;
+        vectorDrag = false;
+
+        updateEditor();
+        render();
+
+        if (hadChanges) {
+            byId("tb-status").textContent = "Неподтверждённые изменения отменены";
         }
     }
+    function readParameters() {
+        return {
+            m: +byId("tb-mass").value,
+            x: +byId("tb-x").value,
+            y: +byId("tb-y").value,
+            v: +byId("tb-vel").value,
+            a: +byId("tb-angle").value
+        };
+    }
+    function commitSelectedChanges(parameters) {
+        if (selectedIndex < 0) return;
+        const draft = draftFor(selectedIndex);
+        bodies[selectedIndex].m = parameters.m;
+        bodies[selectedIndex].x = parameters.x;
+        bodies[selectedIndex].y = parameters.y;
+        bodies[selectedIndex].vx = draft.vx;
+        bodies[selectedIndex].vy = draft.vy;
+        delete velocityDrafts[selectedIndex];
+        delete pendingChanges[selectedIndex];
+    }
+    function applyMass(all) {
+        const parameters = readParameters();
+        if (!Number.isFinite(parameters.m) || parameters.m <= 0 || parameters.m > 1000) {
+            showToast("Масса должна быть больше нуля и не превышать 1000 масс Солнца.");
+            return;
+        }
+        if (selectedIndex >= 0) {
+            commitSelectedChanges(parameters);
+        }
+        markCustom();
+        if (all) {
+            bodies.forEach(body => (body.m = parameters.m));
+        }
+        setStatus(all ? "Масса применена ко всем телам" : "Масса применена к телу");
+        resetSimulation();
+        updateEditor();
+    }
+    function applyVelocity(all) {
+        const parameters = readParameters();
+        if (!Number.isFinite(parameters.v) || parameters.v < 0 || parameters.v > 10000) {
+            showToast("Скорость должна быть от 0 до 10000 км/с.");
+            return;
+        }
+        if (selectedIndex >= 0) {
+            commitSelectedChanges(parameters);
+        }
+        markCustom();
+        if (all) {
+            bodies.forEach(body => {
+                const angle = Math.atan2(body.vy, body.vx);
+                const velocity = parameters.v * KM_S_TO_AU_DAY;
+                body.vx = velocity * Math.cos(angle);
+                body.vy = velocity * Math.sin(angle);
+            });
+        } else if (selectedIndex >= 0) {
+            setVelocity(bodies[selectedIndex], parameters.v, parameters.a);
+        }
+        setStatus(all ? "Скорость применена ко всем телам" : "Скорость применена к телу");
+        resetSimulation();
+        updateEditor();
+    }
+    function updateDraftFromInputs() {
+        if (selectedIndex < 0) return;
+        const velocityKmS = +byId("tb-vel").value;
+        const angle = +byId("tb-angle").value;
+        if (!Number.isFinite(velocityKmS) || !Number.isFinite(angle)) return;
+        setVelocity(draftFor(selectedIndex), velocityKmS, angle);
+        markPendingChange();
+        markCustom();
+        byId("tb-vel-out").textContent = formatNumber(velocityKmS);
+        byId("tb-vel-range").value = clamp(velocityKmS, 0, 100);
+        render();
+    }
+    canvas.addEventListener("pointerdown", event => {
+        const bounds = canvas.getBoundingClientRect();
+        const pointer = { x: event.clientX - bounds.left, y: event.clientY - bounds.top };
+        if (selectedIndex >= 0) {
+            const body = bodies[selectedIndex];
+            const draft = draftFor(selectedIndex);
+            const screenPosition = toScreen(body);
+            const angle = Math.atan2(draft.vy, draft.vx);
+            const arrowLength = clamp(speedKmS(draft) * 2.0, 16, 90);
+            const tip = {
+                x: screenPosition.x + Math.cos(angle) * arrowLength,
+                y: screenPosition.y - Math.sin(angle) * arrowLength
+            };
 
-    draw();
+            if (Math.hypot(tip.x - pointer.x, tip.y - pointer.y) < 24) {
+                vectorDrag = true;
+                canvas.setPointerCapture(event.pointerId);
+                return;
+            }
+        }
+        const bodyIndex = bodies.findIndex(body => {
+            const screenPosition = toScreen(body);
+            return Math.hypot(screenPosition.x - pointer.x, screenPosition.y - pointer.y) < 19;
+        });
+        if (bodyIndex >= 0) {
+            if (bodyIndex !== selectedIndex && selectedIndex >= 0) {
+                const hadChanges = !!pendingChanges[selectedIndex];
+                delete velocityDrafts[selectedIndex];
+                delete pendingChanges[selectedIndex];
+                updateStartControl();
+                if (hadChanges) {
+                    byId("tb-status").textContent = "Неподтверждённые изменения отменены";
+                }
+            }
+            selectedIndex = bodyIndex;
+            updateEditor();
+
+            dragPending = true;
+            dragStart = pointer;
+            draggedIndex = -1;
+
+            canvas.setPointerCapture(event.pointerId);
+
+            // Короткое удержание отличает перетаскивание от выбора тела.
+            dragTimer = setTimeout(() => {
+                if (dragPending) {
+                    draggedIndex = bodyIndex;
+                    dragPending = false;
+                }
+            }, 65);
+
+            render();
+        } else if (selectedIndex >= 0) {
+            clearSelection();
+        }
+    });
+    canvas.addEventListener("pointermove", event => {
+        const bounds = canvas.getBoundingClientRect();
+        const pointer = { x: event.clientX - bounds.left, y: event.clientY - bounds.top };
+
+        if (vectorDrag && selectedIndex >= 0 && !running) {
+            const origin = toScreen(bodies[selectedIndex]);
+            const dx = pointer.x - origin.x;
+            const dy = origin.y - pointer.y;
+            const draft = draftFor(selectedIndex);
+            const velocityKmS = speedKmS(draft);
+            const angle = (Math.atan2(dy, dx) * 180) / Math.PI;
+
+            setVelocity(draft, velocityKmS, angle);
+            markPendingChange();
+            markCustom();
+            updateEditor();
+            render();
+            return;
+        }
+
+        if (dragPending) {
+            if (Math.hypot(pointer.x - dragStart.x, pointer.y - dragStart.y) > 5) {
+                clearTimeout(dragTimer);
+                dragTimer = null;
+                dragPending = false;
+            }
+            return;
+        }
+        const position = toSimulation(pointer);
+        bodies[draggedIndex].x = position.x;
+        bodies[draggedIndex].y = position.y;
+        trails[draggedIndex] = [{ ...position }];
+        markCustom();
+        updateEditor();
+        render();
+    });
+    function finishPointer() {
+        if (dragTimer) {
+            clearTimeout(dragTimer);
+            dragTimer = null;
+        }
+        dragPending = false;
+        draggedIndex = -1;
+        vectorDrag = false;
+    }
+    canvas.addEventListener("pointerup", finishPointer);
+    canvas.addEventListener("pointercancel", finishPointer);
+    byId("tb-mass").oninput = () => {
+        byId("tb-mass-range").value = clamp(+byId("tb-mass").value || 0.0001, 0.0001, 10);
+        byId("tb-mass-out").textContent = formatNumber(+byId("tb-mass").value || 0, 5);
+        markPendingChange();
+    };
+    byId("tb-mass-range").oninput = event => {
+        byId("tb-mass").value = event.target.value;
+        byId("tb-mass-out").textContent = formatNumber(+event.target.value, 5);
+        markPendingChange();
+    };
+    byId("tb-x").oninput = markPendingChange;
+    byId("tb-y").oninput = markPendingChange;
+    byId("tb-vel").oninput = updateDraftFromInputs;
+    byId("tb-vel-range").oninput = event => {
+        byId("tb-vel").value = event.target.value;
+        updateDraftFromInputs();
+    };
+    byId("tb-angle").oninput = updateDraftFromInputs;
+    byId("tb-apply").onclick = () => {
+        if (selectedIndex < 0) return;
+        const p = readParameters();
+        if (
+            ![p.m, p.x, p.y].every(Number.isFinite) ||
+            p.m <= 0 ||
+            p.m > 1000 ||
+            Math.abs(p.x) > 10000 ||
+            Math.abs(p.y) > 10000
+        ) {
+            showToast("Проверь массу и координаты.");
+            return;
+        }
+        commitSelectedChanges(p);
+        markCustom();
+        setStatus("Параметры тела применены");
+        resetSimulation();
+        updateEditor();
+    };
+    byId("tb-cancel").onclick = () => {
+        if (selectedIndex < 0) return;
+        delete velocityDrafts[selectedIndex];
+        delete pendingChanges[selectedIndex];
+        updateEditor();
+        updateStartControl();
+        setStatus("Несохранённые изменения отменены");
+    };
+    byId("tb-reset-selected").onclick = resetSelected;
+    byId("tb-mass-all").onclick = () => applyMass(true);
+    byId("tb-velocity-all").onclick = () => applyVelocity(true);
+    byId("tb-preset").onchange = event => preset(event.target.value);
+    byId("tb-start").onclick = () => {
+        if (hasPendingChanges()) {
+            showToast("Сначала примени параметры или нажми «Отмена».");
+            return;
+        }
+        running = !running;
+        byId("tb-start").textContent = running ? "Остановить" : "Продолжить";
+        setStatus(running ? "Симуляция выполняется" : "Симуляция остановлена");
+    };
+    byId("tb-reset").onclick = resetAll;
+    byId("tb-speed").oninput = event => {
+        speed = +event.target.value;
+        byId("tb-speed-out").textContent = speed + "×";
+    };
+    function frame(now) {
+        if (!lastFrameTime) lastFrameTime = now;
+
+        const elapsed = Math.min((now - lastFrameTime) / 1000, 0.05);
+        lastFrameTime = now;
+
+        if (running) {
+            timeAccumulator += elapsed * speed * 2;
+            let iterations = 0;
+
+            while (running && timeAccumulator >= STEP_DAYS && iterations++ < 500) {
+                step();
+                timeAccumulator -= STEP_DAYS;
+            }
+        }
+
+        render();
+        requestAnimationFrame(frame);
+    }
+    window.addEventListener("keydown", event => {
+        if (event.key !== "Escape") return;
+
+        running = false;
+        timeAccumulator = 0;
+
+        byId("tb-start").disabled = false;
+        byId("tb-start").textContent = "Продолжить";
+
+        clearSelection();
+
+        byId("tb-status").textContent = "Симуляция остановлена";
+    });
+    bodies = PRESETS.figure8.map(entry => ({
+        x: entry[0],
+        y: entry[1],
+        vx: entry[2] * SQRT_G,
+        vy: entry[3] * SQRT_G,
+        m: entry[4]
+    }));
+    initialBodies = bodies.map(b => ({ ...b }));
+    resize();
+    updateEditor();
+    resetSimulation();
+    window.addEventListener("resize", () => {
+        resize();
+        render();
+    });
     requestAnimationFrame(frame);
-}
-window.addEventListener("keydown",e=>{
-    if(e.key!=="Escape")return;
-
-    // Остановка симуляции
-    run=false;
-    acc=0;
-
-    $("tb-start").disabled=false;
-    $("tb-start").textContent="Продолжить";
-
-    // Снятие выбора тела
-    clearSelection();
-
-    $("tb-status").textContent="Симуляция остановлена";
-});
-B=P.figure8.map(a=>({ x:a[0], y:a[1], vx:a[2]*SQRT_G, vy:a[3]*SQRT_G, m:a[4] })); INITIAL=B.map(b=>({...b}));resize();editor();reset();window.addEventListener("resize",()=>{resize();draw()});requestAnimationFrame(frame);
 })();

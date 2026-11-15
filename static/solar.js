@@ -19,8 +19,7 @@ const clockFormatter = new Intl.DateTimeFormat("ru-RU", {
     hour: "2-digit", minute: "2-digit", second: "2-digit",
 });
 
-// NASA/JPL Table 1. a, e, I, L, longitude of perihelion, longitude of ascending node.
-// Positions for Earth use the Earth–Moon barycenter.
+// Элементы орбит из таблицы 1 NASA/JPL. Для Земли берём барицентр Земли и Луны.
 const bodies = [
     {id: "sun", name: "Солнце", type: "Звезда", radius: 695700, size: 54, color: "#ffc185", texture: "star",
         palette: [[157, 64, 19], [255, 166, 76], [255, 239, 162]]},
@@ -82,7 +81,7 @@ const bodyType = document.querySelector("#body-type");
 const bodyFacts = document.querySelector("#body-facts");
 const bodyNote = document.querySelector("#body-note");
 const bodySource = document.querySelector("#body-source");
-// Density (g/cm³) and sidereal rotation (hours) from NASA's Planetary Fact Sheets.
+// Плотность и период вращения из NASA Planetary Fact Sheets.
 const bodyScience = {
     sun: [1.408, 609.1, "Солнце вращается с разной скоростью на разных широтах. Значение указано для экватора."],
     mercury: [5.429, 1407.6, "За два оборота вокруг Солнца Меркурий трижды поворачивается вокруг своей оси."],
@@ -139,6 +138,7 @@ function orbitPoint(orbit, anomaly) {
 }
 
 function currentAnomaly({mean, e}) {
+    // Решаем уравнение Кеплера методом Ньютона.
     let estimate = mean;
     for (let i = 0; i < 6; i++) {
         estimate -= (estimate - e * Math.sin(estimate) - mean) / (1 - e * Math.cos(estimate));
@@ -147,6 +147,7 @@ function currentAnomaly({mean, e}) {
 }
 
 function compressedPoint(point) {
+    // Логарифмически сжимаем расстояния для обзора всей системы.
     const distance = Math.hypot(...point);
     const factor = distance ? Math.log1p(4.7 * distance) / (distance * Math.log1p(4.7 * 31)) : 1;
     return point.map(value => value * factor);
@@ -183,7 +184,7 @@ function projectOffset(point, frame) {
         point[2] - camera.pivot[2],
         frame,
     );
-    // Positive depth is toward the viewer. Near bodies are larger and painted last.
+    // Ближние тела выглядят крупнее и рисуются последними.
     const perspective = 1 / (1 - depth * PERSPECTIVE);
     return {x: dx * perspective, y: dy * perspective, depth, perspective};
 }
@@ -215,13 +216,13 @@ function grabAnchor(x, y, hit, frame) {
     if (hit) return hit.world;
     const sy = (y - frame.centerY) / frame.scale - camera.screenY;
     const slope = frame.tiltSin + sy * frame.tiltCos * PERSPECTIVE;
-    // Intersect the orbital plane when stable, including views from below.
+    // При достаточном угле обзора берём точку на плоскости орбит.
     if (Math.abs(slope) > .04) {
         const depth = (sy * frame.tiltCos - camera.pivot[2]) / slope;
         const point = unproject(x, y, depth, frame);
         if (Math.hypot(...point) <= MAX_PIVOT_DISTANCE) return point;
     }
-    // Empty space uses the Sun's screen plane. Bound the pivot outside the map.
+    // Для пустой области берём плоскость экрана через Солнце.
     const sunDepth = projectOffset(DEFAULT_CAMERA.pivot, frame).depth;
     const point = unproject(x, y, sunDepth, frame);
     const distance = Math.hypot(...point);
