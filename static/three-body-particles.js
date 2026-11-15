@@ -1,9 +1,9 @@
-import { bodyRadius } from "./three-body-collision.js";
+import { bodyRadius, sweptContact } from "./three-body-collision.js";
 
-const DURATION_MS = 5000;
-const STEPS = 300;
-const CAPTURE_STEP = 228;
-const BASE_DURATION_DAYS = 19;
+const BASE_STEP_DAYS = 19 / 300;
+const DEBRIS_STEP_COST = 64 / 60;
+const VELOCITY_FIELDS = ["vx", "vy", "vz"];
+const STATE_FIELDS = ["x", "y", "z", ...VELOCITY_FIELDS];
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 const SURFACE_PAIRS = 48;
 const VOLUME_PAIRS = 168;
@@ -38,13 +38,13 @@ function encounterFrame(a, b) {
     return { along, across, normal: cross(along, across), glancing };
 }
 
-function seedDebris(core, frame, group, dimensions, gravity) {
+function seedDebris(core, frame, spin, dimensions, gravity) {
     const count = dimensions === 3 ? PARTICLES_PER_SPHERE : PARTICLES_PER_DISK;
     const mass = core.m / count;
+    const group = core.indices[0];
     // Для суммы объёмов или площадей достаточно складывать степени радиусов.
-    const measure = core.radius ** dimensions / count;
+    const measure = core.measure / count;
     const { along, across, normal } = frame;
-    const spin = frame.glancing || group === 0 ? 1 : -1;
     const particles = [];
 
     // Часть точек покрывает поверхность, остальные заполняют объём и плоскость пролёта.
@@ -58,16 +58,16 @@ function seedDebris(core, frame, group, dimensions, gravity) {
         const horizontal = Math.sqrt(1 - latitude ** 2);
         const cos = Math.cos(azimuth);
         const sin = Math.sin(azimuth);
-        const radius = core.radius * (surface ? 1 : depth ** (1 / (belt ? 2 : dimensions)));
+        const radius = core.fieldRadius * (surface ? 1 : depth ** (1 / (belt ? 2 : dimensions)));
         const radial = along.map((component, axis) => (
             horizontal * (component * cos + across[axis] * sin) + normal[axis] * latitude
         ));
         const tangent = along.map((component, axis) => -component * sin + across[axis] * cos);
         // Круговая скорость в смягчённом поле ядра зависит от радиуса орбиты.
         const orbitSpeed = spin * radius * Math.sqrt(
-            gravity * core.m / (core.radius * (radius * radius + core.softeningSquared))
+            gravity * core.m / (core.fieldRadius * (radius * radius + core.softeningSquared))
         ) * (0.93 + 0.14 * ((i * 0.6180339887) % 1));
-        const traced = i % TRACE_STRIDE === 0 && radius > 0.58 * core.radius;
+        const traced = i % TRACE_STRIDE === 0 && radius > 0.58 * core.fieldRadius;
         for (const sign of [-1, 1]) {
             particles.push({
                 x: core.x + sign * radius * radial[0],
@@ -76,7 +76,7 @@ function seedDebris(core, frame, group, dimensions, gravity) {
                 vx: core.vx + sign * orbitSpeed * tangent[0],
                 vy: core.vy + sign * orbitSpeed * tangent[1],
                 vz: core.vz + sign * orbitSpeed * tangent[2],
-                m: mass, measure, group, tail: traced ? [] : null
+                m: mass, measure, group, owner: core, tail: traced ? [] : null
             });
         }
     }
@@ -89,24 +89,18 @@ function move(body, dt) {
     body.z += body.vz * dt;
 }
 
-function kickFrom(body, source, gravityStep, diskField) {
+function kickFrom(body, source, gravityStep) {
     const dx = source.x - body.x;
     const dy = source.y - body.y;
     const dz = source.z - body.z;
     const r2 = dx * dx + dy * dy + dz * dz + source.softeningSquared;
     // Внутри облака поле логарифмическое, вдали оно убывает как 1/r².
     const softenedDistance = Math.sqrt(r2);
-    const falloff = diskField ? Math.max(source.radius, softenedDistance / 1.6) : softenedDistance;
+    const falloff = source.radius ? softenedDistance : Math.max(source.fieldRadius, softenedDistance / 1.6);
     const factor = gravityStep * source.m / (r2 * falloff);
     body.vx += dx * factor;
     body.vy += dy * factor;
     body.vz += dz * factor;
-}
-
-function kickDebris(particle, [first, second, survivor], halfKick) {
-    kickFrom(particle, first, halfKick, true);
-    kickFrom(particle, second, halfKick, true);
-    kickFrom(particle, survivor, halfKick, false);
 }
 
 function kickCenters(centers, gravityStep) {
@@ -132,7 +126,7 @@ function kickCenters(centers, gravityStep) {
 function dampEncounter(a, b, dt) {
     // Трение при сближении ядер рассеивает энергию и сохраняет импульс пары.
     const distance = Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
-    const proximity = distance / (1.8 * (a.radius + b.radius));
+    const proximity = distance / (1.8 * (a.fieldRadius + b.fieldRadius));
     const drag = 1 - Math.exp(-0.14 * dt / (1 + proximity ** 2));
     const dragA = drag * b.m / (a.m + b.m);
     const dragB = drag * a.m / (a.m + b.m);
@@ -147,112 +141,241 @@ function dampEncounter(a, b, dt) {
     b.vz -= dvz * dragB;
 }
 
-function updateRemnant(remnant, a, b) {
-    const weight = b.m / (a.m + b.m);
-    remnant.x = a.x + (b.x - a.x) * weight;
-    remnant.y = a.y + (b.y - a.y) * weight;
-    remnant.z = a.z + (b.z - a.z) * weight;
-    remnant.vx = a.vx + (b.vx - a.vx) * weight;
-    remnant.vy = a.vy + (b.vy - a.vy) * weight;
-    remnant.vz = a.vz + (b.vz - a.vz) * weight;
+function refreshRadii(center, dimensions) {
+    // Для удара берём радиус осевшего вещества. Поле учитывает и облако обломков.
+    center.radius = center.solidMeasure ** (1 / dimensions);
+    center.fieldRadius = Math.max(0.02, center.measure ** (1 / dimensions));
+    center.softeningSquared = (0.27 * center.fieldRadius) ** 2;
 }
 
-function captureDebris(particles, remnant, radius, remaining) {
-    const progress = 1 - (remaining - 1) / (STEPS - CAPTURE_STEP);
-    const shrink = ((remaining - 1) / remaining) ** 0.8;
-    const threshold = radius * (0.42 + 0.58 * progress);
+function makeCenter(body, index, disrupted, dimensions) {
+    const measure = bodyRadius(body.m) ** dimensions;
+    const colorMass = [0, 0, 0];
+    if (!disrupted) colorMass[index] = body.m;
+    const center = {
+        ...body, z: body.z ?? 0, vz: body.vz ?? 0, indices: [index],
+        measure, solidMeasure: disrupted ? 0 : measure, colorMass, debrisCount: 0
+    };
+    refreshRadii(center, dimensions);
+    return center;
+}
 
-    // В финале обломки оседают в остаток, сохраняя весь объём вещества.
-    for (let i = 0; i < particles.length;) {
+function absorbParticle(target, particle, dimensions) {
+    const source = particle.owner;
+    let mass = particle.m;
+    let measure = particle.measure;
+    if (source !== target) {
+        if (source.debrisCount === 1 && !source.radius) {
+            mass = source.m;
+            measure = source.measure;
+        }
+        const remaining = source.m - mass;
+        const share = mass / (target.m + mass);
+        // Импульс передаётся телу. Реакцию редеющего облака ограничивает его остаточная масса.
+        const recoil = Math.min(1, remaining / (4 * mass));
+        for (const key of VELOCITY_FIELDS) {
+            const incoming = source[key] + (particle[key] - source[key]) * recoil;
+            target[key] += (incoming - target[key]) * share;
+            if (remaining > 0) source[key] += (source[key] - incoming) * mass / remaining;
+        }
+        source.m = remaining;
+        source.measure = Math.max(0, source.measure - measure);
+        target.m += mass;
+        target.measure += measure;
+        refreshRadii(source, dimensions);
+    }
+    source.debrisCount--;
+    target.solidMeasure += measure;
+    target.colorMass[particle.group] += mass;
+    refreshRadii(target, dimensions);
+}
+
+function mergeCenters(a, b, centers, particles, dimensions) {
+    const weight = b.m / (a.m + b.m);
+    for (const key of STATE_FIELDS) a[key] += (b[key] - a[key]) * weight;
+    a.m += b.m;
+    a.measure += b.measure;
+    a.solidMeasure += b.solidMeasure;
+    a.debrisCount += b.debrisCount;
+    a.indices = [...a.indices, ...b.indices].sort((x, y) => x - y);
+    a.colorMass = a.colorMass.map((mass, i) => mass + b.colorMass[i]);
+    for (const particle of particles) {
+        if (particle.owner === b) particle.owner = a;
+    }
+    centers.splice(centers.indexOf(b), 1);
+    refreshRadii(a, dimensions);
+}
+
+function seedRemnant(center, particles, dimensions) {
+    const radius = 0.35 * center.fieldRadius;
+    let closest = -1;
+    let nearest = Infinity;
+    for (let i = particles.length - 1; i >= 0; i--) {
         const p = particles[i];
-        const dx = (p.x - remnant.x) * shrink;
-        const dy = (p.y - remnant.y) * shrink;
-        const dz = (p.z - remnant.z) * shrink;
-        if (dx * dx + dy * dy + dz * dz <= threshold ** 2) {
-            remnant.m += p.m;
-            remnant.measure += p.measure;
-            remnant.mix += (p.group - remnant.mix) * p.m / remnant.m;
+        if (p.owner !== center) continue;
+        const distance = Math.hypot(p.x - center.x, p.y - center.y, p.z - center.z);
+        if (distance <= radius) {
+            absorbParticle(center, p, dimensions);
             particles[i] = particles.at(-1);
             particles.pop();
-        } else {
-            p.x = remnant.x + dx;
-            p.y = remnant.y + dy;
-            p.z = remnant.z + dz;
-            i++;
+        } else if (distance < nearest) {
+            nearest = distance;
+            closest = i;
         }
+    }
+    if (!center.radius && closest >= 0) {
+        absorbParticle(center, particles[closest], dimensions);
+        particles[closest] = particles.at(-1);
+        particles.pop();
     }
 }
 
-function makeCenter(body) {
-    const radius = bodyRadius(body.m);
-    return { ...body, z: body.z ?? 0, vz: body.vz ?? 0, radius, softeningSquared: (0.27 * radius) ** 2 };
+function canCondense(a, b, gravity) {
+    const distance = Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
+    const capture = 0.43 * (a.fieldRadius + b.fieldRadius);
+    if (distance > capture) return false;
+    const softened = a.softeningSquared + b.softeningSquared;
+    const strength = gravity * (a.m + b.m);
+    const speedSquared = (a.vx - b.vx) ** 2 + (a.vy - b.vy) ** 2 + (a.vz - b.vz) ** 2;
+    // Ядра оседают, когда энергии уже не хватает выйти из области захвата.
+    const energy = 0.5 * speedSquared - strength / Math.sqrt(distance ** 2 + softened);
+    return energy <= -strength / Math.sqrt(capture ** 2 + softened);
+}
+
+function dampBoundDebris(particle, dt) {
+    const core = particle.owner;
+    if (!core.radius) return;
+    const distance = Math.hypot(particle.x - core.x, particle.y - core.y, particle.z - core.z);
+    const proximity = distance / (3 * core.fieldRadius);
+    if (proximity >= 1) return;
+    const drag = (1 - Math.exp(-0.30 * dt)) * (1 - proximity ** 2);
+    for (const key of VELOCITY_FIELDS) particle[key] += (core[key] - particle[key]) * drag;
+}
+
+function advanceParticles(particles, centers, previous, dt, halfKick) {
+    const solidIndices = previous.flatMap((body, i) => body.radius ? [i] : []);
+    const hits = [];
+    const start = {};
+    for (const [index, particle] of particles.entries()) {
+        start.x = particle.x;
+        start.y = particle.y;
+        start.z = particle.z;
+        for (const center of previous) kickFrom(particle, center, halfKick);
+        move(particle, dt);
+        for (const center of centers) kickFrom(particle, center, halfKick);
+        dampBoundDebris(particle, dt);
+
+        let target = null;
+        let earliest = Infinity;
+        for (const i of solidIndices) {
+            // Проверяем весь отрезок движения точки относительно подвижной сферы.
+            const contact = sweptContact(previous[i], start, centers[i], particle, previous[i].radius);
+            if (contact !== null && contact < earliest) {
+                target = centers[i];
+                earliest = contact;
+            }
+        }
+        if (target) hits.push({ index, target });
+    }
+    return hits;
+}
+
+function firstSphereImpact(centers, previous) {
+    let impact = null;
+    let earliest = Infinity;
+    for (let i = 0; i < centers.length; i++) {
+        const a = centers[i];
+        if (!a.radius) continue;
+        for (let j = i + 1; j < centers.length; j++) {
+            const b = centers[j];
+            if (!b.radius) continue;
+            const fraction = sweptContact(previous[i], previous[j], a, b, a.radius + b.radius);
+            if (fraction !== null && fraction < earliest) {
+                impact = [a, b];
+                earliest = fraction;
+            }
+        }
+    }
+    return impact;
 }
 
 export function createParticleImpact(bodies, { first, second }, dimensions, gravity) {
-    const indices = [first, second];
-    const survivorIndex = bodies.findIndex((_, i) => !indices.includes(i));
-    const a = makeCenter(bodies[first]);
-    const b = makeCenter(bodies[second]);
-    const survivor = makeCenter(bodies[survivorIndex]);
-    const centers = [a, b, survivor];
-    const remnant = { m: 0, measure: 0, mix: 0 };
-    const radius = (a.radius ** dimensions + b.radius ** dimensions) ** (1 / dimensions);
-    const sumOfRadii = a.radius + b.radius;
-    const mass = a.m + b.m;
+    const centers = bodies.map((body, i) => makeCenter(body, i, i === first || i === second, dimensions));
+    const a = centers[first];
+    const b = centers[second];
     const frame = encounterFrame(a, b);
-    updateRemnant(remnant, a, b);
+    const sumOfRadii = a.fieldRadius + b.fieldRadius;
+    const mass = a.m + b.m;
     const speed = Math.hypot(b.vx - a.vx, b.vy - a.vy, b.vz - a.vz);
     const speedLimit = 2.5 * Math.sqrt(gravity * mass / sumOfRadii);
     const velocityScale = Math.min(1, speedLimit / speed);
-    for (const core of [a, b]) {
-        core.vx = remnant.vx + (core.vx - remnant.vx) * velocityScale;
-        core.vy = remnant.vy + (core.vy - remnant.vy) * velocityScale;
-        core.vz = remnant.vz + (core.vz - remnant.vz) * velocityScale;
+    for (const key of VELOCITY_FIELDS) {
+        const centerVelocity = a[key] + (b[key] - a[key]) * b.m / mass;
+        a[key] = centerVelocity + (a[key] - centerVelocity) * velocityScale;
+        b[key] = centerVelocity + (b[key] - centerVelocity) * velocityScale;
     }
 
-    const scale = Math.min(1.5, Math.sqrt((sumOfRadii / 0.2) ** 3 * 2 / (mass + survivor.m)));
-    // Внешний таймер держит пять секунд, шаг модели зависит от масс и размеров.
-    const dt = BASE_DURATION_DAYS * scale / STEPS;
-    const halfKick = gravity * dt / 2;
-    const particles = [
-        ...seedDebris(a, frame, 0, dimensions, gravity),
-        ...seedDebris(b, frame, 1, dimensions, gravity)
-    ];
-    let startedAt;
+    const scale = Math.min(1.5, Math.sqrt((sumOfRadii / 0.2) ** 3 * 2 / centers.reduce((sum, body) => sum + body.m, 0)));
+    const stepDays = BASE_STEP_DAYS * scale;
+    const halfKick = gravity * stepDays / 2;
+    const firstCloud = seedDebris(a, frame, 1, dimensions, gravity);
+    const secondCloud = seedDebris(b, frame, frame.glancing ? 1 : -1, dimensions, gravity);
+    a.debrisCount = firstCloud.length;
+    b.debrisCount = secondCloud.length;
+    const particles = [...firstCloud, ...secondCloud];
     let steps = 0;
+
     return {
-        indices, survivorIndex, survivor, particles, remnant,
-        get finished() { return steps === STEPS; },
-        advance(now) {
-            startedAt ??= now;
-            const target = Math.min(STEPS, Math.floor((now - startedAt) * STEPS / DURATION_MS));
-            const days = (target - steps) * dt;
-            while (steps < target) {
-                // Полушаги ускорения до и после переноса удерживают орбиты.
-                for (const particle of particles) {
-                    kickDebris(particle, centers, halfKick);
-                    move(particle, dt);
+        centers, particles, stepDays,
+        // Обломки замедляют ход модели для наглядности. Ползунок скорости продолжает работать.
+        get stepCost() { return particles.length ? DEBRIS_STEP_COST : stepDays; },
+        step() {
+            const previous = centers.map(center => ({ ...center }));
+            kickCenters(centers, halfKick);
+            for (const center of centers) move(center, stepDays);
+            kickCenters(centers, halfKick);
+
+            const hits = advanceParticles(particles, centers, previous, stepDays, halfKick);
+            const debrisHits = new Set();
+            for (const { index, target } of hits.reverse()) {
+                const particle = particles[index];
+                if (particle.owner !== target) debrisHits.add(target.indices);
+                absorbParticle(target, particle, dimensions);
+                particles[index] = particles.at(-1);
+                particles.pop();
+            }
+
+            const events = [...debrisHits].map(indices => ({ type: "debris", indices }));
+            const sphereImpact = firstSphereImpact(centers, previous);
+            if (sphereImpact) {
+                const [left, right] = sphereImpact;
+                mergeCenters(left, right, centers, particles, dimensions);
+                events.push({ type: "collision", indices: left.indices });
+            }
+            for (let i = centers.length - 1; i >= 0; i--) {
+                if (centers[i].m === 0) centers.splice(i, 1);
+            }
+
+            const diffuse = centers.filter(center => !center.radius);
+            if (diffuse.length === 2) {
+                const [left, right] = diffuse;
+                dampEncounter(left, right, stepDays);
+                if (canCondense(left, right, gravity)) {
+                    mergeCenters(left, right, centers, particles, dimensions);
+                    seedRemnant(left, particles, dimensions);
                 }
-                kickCenters(centers, halfKick);
-                for (const center of centers) move(center, dt);
-                kickCenters(centers, halfKick);
-                dampEncounter(a, b, dt);
-                for (const particle of particles) {
-                    kickDebris(particle, centers, halfKick);
-                }
-                if (steps >= CAPTURE_STEP) {
-                    updateRemnant(remnant, a, b);
-                    captureDebris(particles, remnant, radius, STEPS - steps);
-                }
-                if (++steps % 5 === 0) {
-                    for (const p of particles) {
-                        if (!p.tail) continue;
-                        p.tail.push({ x: p.x, y: p.y, z: p.z });
-                        if (p.tail.length > TAIL_POINTS) p.tail.shift();
-                    }
+            } else if (diffuse.length === 1) {
+                seedRemnant(diffuse[0], particles, dimensions);
+            }
+
+            if (++steps % 5 === 0) {
+                for (const p of particles) {
+                    if (!p.tail) continue;
+                    p.tail.push({ x: p.x, y: p.y, z: p.z });
+                    if (p.tail.length > TAIL_POINTS) p.tail.shift();
                 }
             }
-            return days;
+            return events;
         }
     };
 }

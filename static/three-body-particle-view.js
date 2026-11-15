@@ -37,34 +37,22 @@ export function createParticleView(scene, colors) {
     const tails = new THREE.LineSegments(traces.geometry, new THREE.LineBasicMaterial({
         vertexColors: true, transparent: true, opacity: 0.26, depthWrite: false
     }));
-    const settled = new THREE.Mesh(
-        new THREE.SphereGeometry(1, 32, 24),
-        new THREE.MeshStandardMaterial({ roughness: 0.64 })
-    );
     points.frustumCulled = false;
     tails.frustumCulled = false;
     points.visible = false;
     tails.visible = false;
-    settled.visible = false;
-    scene.add(points, tails, settled);
+    scene.add(points, tails);
 
     const palette = colors.map(color => new THREE.Color(color));
     return {
-        render({ indices, particles, remnant }) {
-            const pairColors = indices.map(index => palette[index]);
+        render({ particles }) {
             points.visible = particles.length > 0;
             tails.visible = points.visible;
-            settled.visible = remnant.m > 0;
-            if (settled.visible) {
-                settled.position.set(remnant.x, remnant.y, remnant.z);
-                settled.scale.setScalar(Math.cbrt(remnant.measure));
-                settled.material.color.copy(pairColors[0]).lerp(pairColors[1], remnant.mix);
-            }
             if (!points.visible) return;
 
             let vertex = 0;
             particles.forEach((particle, i) => {
-                const color = pairColors[particle.group];
+                const color = palette[particle.group];
                 dots.position.setXYZ(i, particle.x, particle.y, particle.z);
                 dots.color.setXYZ(i, color.r, color.g, color.b);
                 const tail = particle.tail;
@@ -88,7 +76,6 @@ export function createParticleView(scene, colors) {
         hide() {
             points.visible = false;
             tails.visible = false;
-            settled.visible = false;
         }
     };
 }

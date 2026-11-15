@@ -1,4 +1,5 @@
-import { bodyRadius, firstContact, stateAtContact } from "./three-body-collision.js";
+import { bodyLabel, bodyRadius, firstContact, stateAtContact } from "./three-body-collision.js";
+import { EJECTION_DISTANCE, findEjections } from "./three-body-ejection.js";
 import { createParticleImpact } from "./three-body-particles.js";
 import { clearToast, showToast } from "./three-body-toast.js";
 
@@ -16,9 +17,7 @@ import { clearToast, showToast } from "./three-body-toast.js";
     const KM_S_TO_AU_DAY = DAY_S / AU_KM;
     const SQRT_G = Math.sqrt(G);
     const STEP_DAYS = 0.01;
-    const EJECTION_DISTANCE = 10;
     const STABILITY_CHECK_DAYS = 500;
-    const EJECTION_CONFIRM_DAYS = 20;
     const TRAIL_MAX = 2000;
     const BODY_COLORS = ["#8ddcff", "#ffc58e", "#c7a5ff"];
     const BODY_COLORS_RGB = BODY_COLORS.map(color =>
@@ -46,6 +45,11 @@ import { clearToast, showToast } from "./three-body-toast.js";
             [-0.85, 0, 0.34, -0.165, 1],
             [0.85, 0, -0.34, 0.165, 1],
             [0, 2.15, 0, 0.12, 0.6]
+        ],
+        debris: [
+            [-0.52, 0, 0.66, -0.10, 1],
+            [0.52, 0, -0.66, 0.10, 1],
+            [0, 1.05, 0, -1.10, 0.8]
         ]
     };
     let bodies = [];
@@ -68,9 +72,8 @@ import { clearToast, showToast } from "./three-body-toast.js";
     let dragTimer = null;
     const viewport = { x: 0, y: 0, scale: 100 };
     let activePreset = "figure8";
-    let ejectionSince = {};
+    const ejectionSince = new Map();
     let maxSeparation = 0;
-    let stabilityReported = false;
     let impact = null;
 
     const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
@@ -89,7 +92,7 @@ import { clearToast, showToast } from "./three-body-toast.js";
     }
 
     function hasTerminalEvent() {
-        return events.some(event => event.type === "collision" || event.type === "ejection");
+        return events.some(event => event.type === "ejection");
     }
 
     function updateStartControl() {
@@ -240,11 +243,12 @@ import { clearToast, showToast } from "./three-body-toast.js";
 
     function addEvent(type, bodies, message) {
         const key = type + ":" + bodies.slice().sort((a, b) => a - b).join("-");
-        if (eventKeys.has(key)) return;
+        if (eventKeys.has(key)) return false;
 
         eventKeys.add(key);
         events.push({ type, bodies, message, time });
         renderEvents();
+        return true;
     }
 
     function appendTrailPoint(body, index) {
@@ -257,101 +261,57 @@ import { clearToast, showToast } from "./three-body-toast.js";
         const { first, second } = contact;
         // После касания время ведёт модель обломков.
         impact = createParticleImpact(bodies, contact, 2, G);
-        running = false;
-        timeAccumulator = 0;
-        addEvent("collision", impact.indices, `Столкновение тел ${first + 1} и ${second + 1}`);
         finishPointer();
         clearSelection();
-        updateStartControl();
-        byId("tb-start").textContent = "Столкновение";
+        const message = `Столкновение тел ${first + 1} и ${second + 1}`;
+        addEvent("collision", [first, second], message);
+        showToast(message);
         setStatus("Столкновение · движение обломков");
     }
 
-    function updateImpact(now) {
-        if (!impact || impact.finished) return;
-        const days = impact.advance(now);
-        const { survivorIndex: index, survivor } = impact;
-        if (days > 0) {
-            time += days;
-            bodies[index] = survivor;
-            appendTrailPoint(survivor, index);
+    function stepImpact() {
+        const detected = impact.step();
+        time += impact.stepDays;
+        for (const body of impact.centers) {
+            if (body.radius) appendTrailPoint(body, body.indices[0]);
         }
-        if (impact.finished) {
-            setStatus("Модель остановлена");
-            showToast("Модель остановлена после столкновения");
+        for (const { type, indices } of detected) {
+            const message = type === "debris"
+                ? `${bodyLabel(indices)} захватывает обломки`
+                : `Тела ${indices.map(index => index + 1).join(" + ")} слились`;
+            if (addEvent(type, indices, message)) {
+                showToast(message);
+                setStatus(message);
+            }
         }
+        detectOrbitalEvents();
     }
 
     function detectOrbitalEvents() {
-        let ejection = false;
+        const ejections = findEjections(impact?.centers ?? bodies, time, ejectionSince, G);
+        for (const indices of ejections) {
+            const name = indices.length === 1 ? "тела" : "остатка";
+            const numbers = indices.map(index => index + 1).join(" + ");
+            addEvent("ejection", indices, `Выброс ${name} ${numbers}`);
+        }
 
-        for (let i = 0; i < bodies.length; i++) {
-            if (eventKeys.has("ejection:" + i)) continue;
-
-            const pair = bodies.filter((_, j) => j !== i);
-            const first = pair[0],
-                second = pair[1],
-                body = bodies[i];
-            const mass = first.m + second.m;
-
-            const centerX = (first.m * first.x + second.m * second.x) / mass;
-            const centerY = (first.m * first.y + second.m * second.y) / mass;
-            const centerVx = (first.m * first.vx + second.m * second.vx) / mass;
-            const centerVy = (first.m * first.vy + second.m * second.vy) / mass;
-
-            const rx = body.x - centerX;
-            const ry = body.y - centerY;
-            const rvx = body.vx - centerVx;
-            const rvy = body.vy - centerVy;
-
-            const distance = Math.hypot(rx, ry);
-            const radial = rx * rvx + ry * rvy;
-
-            // Для выброса нужна положительная энергия относительно оставшейся пары.
-            const energy = 0.5 * (rvx * rvx + rvy * rvy) - (G * mass) / Math.max(distance, 1e-12);
-
-            const candidate = distance >= EJECTION_DISTANCE && radial > 0 && energy > 0;
-
-            if (candidate) {
-                if (ejectionSince[i] === undefined) {
-                    ejectionSince[i] = time;
+        if (!impact && events.length === 0) {
+            for (let i = 0; i < bodies.length; i++) {
+                for (let j = i + 1; j < bodies.length; j++) {
+                    const a = bodies[i];
+                    const b = bodies[j];
+                    maxSeparation = Math.max(maxSeparation, Math.hypot(a.x - b.x, a.y - b.y));
                 }
-
-                if (time - ejectionSince[i] >= EJECTION_CONFIRM_DAYS) {
-                    addEvent("ejection", [i], "Выброс тела " + (i + 1));
-                    ejection = true;
-                }
-            } else {
-                delete ejectionSince[i];
+            }
+            if (time >= STABILITY_CHECK_DAYS && maxSeparation < EJECTION_DISTANCE) {
+                addEvent("stable", [], "Предварительно устойчивое движение за 500 суток");
             }
         }
 
-        const distances = [];
-
-        for (let i = 0; i < bodies.length; i++) {
-            for (let j = i + 1; j < bodies.length; j++) {
-                distances.push(Math.hypot(bodies[i].x - bodies[j].x, bodies[i].y - bodies[j].y));
-            }
-        }
-
-        maxSeparation = Math.max(maxSeparation, ...distances);
-
-        if (
-            time >= STABILITY_CHECK_DAYS &&
-            !stabilityReported &&
-            events.length === 0 &&
-            maxSeparation < EJECTION_DISTANCE
-        ) {
-            stabilityReported = true;
-
-            addEvent("stable", [], "Предварительно устойчивое движение за 500 суток");
-        }
-
-        if (ejection) {
+        if (ejections.length) {
             running = false;
             timeAccumulator = 0;
-
-            byId("tb-start").disabled = true;
+            updateStartControl();
             byId("tb-start").textContent = "Выброс тела";
             setStatus("Модель остановлена");
             showToast("Модель остановлена: обнаружен выброс тела");
@@ -378,9 +338,8 @@ import { clearToast, showToast } from "./three-body-toast.js";
     function clearEvents() {
         events = [];
         eventKeys.clear();
-        ejectionSince = {};
+        ejectionSince.clear();
         maxSeparation = 0;
-        stabilityReported = false;
         renderEvents();
     }
 
@@ -421,10 +380,10 @@ import { clearToast, showToast } from "./three-body-toast.js";
         canvas.width = bounds.width * pixelRatio;
         canvas.height = bounds.height * pixelRatio;
         context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
-        const grazing = activePreset === "grazing";
-        viewport.scale = Math.min(bounds.width, bounds.height) / (grazing ? 3.35 : 4.67);
+        const closeView = activePreset === "grazing" || activePreset === "debris";
+        viewport.scale = Math.min(bounds.width, bounds.height) / (closeView ? 3.35 : 4.67);
         viewport.x = bounds.width / 2;
-        viewport.y = bounds.height / 2 + (grazing ? 0.28 * viewport.scale : 0);
+        viewport.y = bounds.height / 2 + (closeView ? 0.28 * viewport.scale : 0);
     }
 
     // Ось Y холста направлена вниз.
@@ -501,10 +460,10 @@ import { clearToast, showToast } from "./three-body-toast.js";
         context.restore();
     }
 
-    function drawDebris({ indices, particles, remnant }) {
-        indices.forEach((index, group) => {
-            context.fillStyle = BODY_COLORS[index];
-            context.strokeStyle = BODY_COLORS[index];
+    function drawDebris({ particles }) {
+        BODY_COLORS.forEach((color, group) => {
+            context.fillStyle = color;
+            context.strokeStyle = color;
             context.lineWidth = 1;
             context.globalAlpha = 0.22;
             context.beginPath();
@@ -528,16 +487,16 @@ import { clearToast, showToast } from "./three-body-toast.js";
             }
         });
         context.globalAlpha = 1;
+    }
 
-        if (remnant.m > 0) {
-            const [first, second] = indices.map(index => BODY_COLORS_RGB[index]);
-            const channels = first.map((channel, i) => Math.round(channel + (second[i] - channel) * remnant.mix));
-            const point = toScreen(remnant);
-            context.fillStyle = `rgb(${channels.join(",")})`;
-            context.beginPath();
-            context.arc(point.x, point.y, viewport.scale * Math.sqrt(remnant.measure), 0, 2 * Math.PI);
-            context.fill();
-        }
+    function bodyColor(body, index) {
+        if (!body.colorMass) return BODY_COLORS[index];
+        const mass = body.colorMass.reduce((sum, value) => sum + value, 0);
+        const components = [0, 1, 2].map(channel => {
+            const weighted = BODY_COLORS_RGB.reduce((sum, color, i) => sum + color[channel] * body.colorMass[i], 0);
+            return Math.round(weighted / mass).toString(16).padStart(2, "0");
+        });
+        return "#" + components.join("");
     }
 
     function render() {
@@ -556,18 +515,21 @@ import { clearToast, showToast } from "./three-body-toast.js";
             context.lineWidth = 1.5;
             context.stroke();
         });
-        bodies.forEach((body, i) => {
-            if (impact?.indices.includes(i)) return;
+        const visibleBodies = impact?.centers ?? bodies;
+        visibleBodies.forEach((body, index) => {
+            const i = body.indices?.[0] ?? index;
+            const radius = (body.radius ?? bodyRadius(body.m)) * viewport.scale;
+            if (!radius) return;
+            const color = bodyColor(body, i);
             const point = toScreen(body);
-            const radius = bodyRadius(body.m) * viewport.scale;
             const glow = context.createRadialGradient(point.x, point.y, 1, point.x, point.y, radius * 3);
-            glow.addColorStop(0, BODY_COLORS[i] + "99");
-            glow.addColorStop(1, BODY_COLORS[i] + "00");
+            glow.addColorStop(0, color + "99");
+            glow.addColorStop(1, color + "00");
             context.fillStyle = glow;
             context.beginPath();
             context.arc(point.x, point.y, radius * 3, 0, 7);
             context.fill();
-            context.fillStyle = BODY_COLORS[i];
+            context.fillStyle = color;
             context.beginPath();
             context.arc(point.x, point.y, radius, 0, 7);
             context.fill();
@@ -576,7 +538,7 @@ import { clearToast, showToast } from "./three-body-toast.js";
             context.stroke();
             context.fillStyle = "#e4edfa";
             context.font = "11px sans-serif";
-            context.fillText("Тело " + (i + 1), point.x + 11, point.y - 11);
+            context.fillText(bodyLabel(body.indices ?? [i]), point.x + radius, point.y - radius);
             // До применения параметров стрелка показывает черновик скорости.
             const velocity =
                 !running && selectedIndex === i && pendingChanges[i] && velocityDrafts[i]
@@ -590,7 +552,7 @@ import { clearToast, showToast } from "./three-body-toast.js";
                 point.y,
                 Math.cos(angle) * arrowLength,
                 -Math.sin(angle) * arrowLength,
-                BODY_COLORS[i]
+                color
             );
         });
         if (impact) drawDebris(impact);
@@ -931,15 +893,15 @@ import { clearToast, showToast } from "./three-body-toast.js";
 
         if (running) {
             timeAccumulator += elapsed * speed * 2;
-            let iterations = 0;
-
-            while (running && timeAccumulator >= STEP_DAYS && iterations++ < 500) {
-                timeAccumulator -= STEP_DAYS;
-                step();
+            for (let iteration = 0; running && iteration < 500; iteration++) {
+                const cost = impact?.stepCost ?? STEP_DAYS;
+                if (timeAccumulator < cost) break;
+                timeAccumulator -= cost;
+                if (impact) stepImpact();
+                else step();
             }
         }
 
-        updateImpact(now);
         render();
         requestAnimationFrame(frame);
     }

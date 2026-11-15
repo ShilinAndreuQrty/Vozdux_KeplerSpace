@@ -24,6 +24,18 @@ function contactFraction(dx, dy, dz, radius, nextDx, nextDy, nextDz) {
     return fraction <= 1 ? fraction : null;
 }
 
+export function bodyLabel(indices) {
+    const numbers = indices.map(index => index + 1);
+    return indices.length === 1 ? `Тело ${numbers[0]}` : `Остаток ${numbers.join(" + ")}`;
+}
+
+export function sweptContact(a, b, nextA, nextB, radius) {
+    return contactFraction(
+        b.x - a.x, b.y - a.y, (b.z ?? 0) - (a.z ?? 0), radius,
+        nextB.x - nextA.x, nextB.y - nextA.y, (nextB.z ?? 0) - (nextA.z ?? 0)
+    );
+}
+
 export function firstContact(bodies, nextBodies = bodies) {
     const radii = bodies.map(body => bodyRadius(body.m));
     let contact = null;
@@ -34,10 +46,7 @@ export function firstContact(bodies, nextBodies = bodies) {
         for (let second = first + 1; second < bodies.length; second++) {
             const b = bodies[second];
             const nextB = nextBodies[second];
-            const fraction = contactFraction(
-                b.x - a.x, b.y - a.y, (b.z ?? 0) - (a.z ?? 0), radii[first] + radii[second],
-                nextB.x - nextA.x, nextB.y - nextA.y, (nextB.z ?? 0) - (nextA.z ?? 0)
-            );
+            const fraction = sweptContact(a, b, nextA, nextB, radii[first] + radii[second]);
             if (fraction === null || (contact && fraction >= contact.fraction)) continue;
             contact = { first, second, fraction };
             if (fraction === 0) return contact;
